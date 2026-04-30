@@ -21,13 +21,13 @@ import {
   MapPin,
   Phone,
   ExternalLink,
-  ChevronRight,
   TrendingUp,
   Briefcase,
   AlertTriangle,
   CheckCircle,
   RefreshCw,
-  X
+  X,
+  Contact
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
@@ -205,6 +205,11 @@ export default function App() {
     source: ''
   });
 
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    return localStorage.getItem('prospectos_sidebar') === 'collapsed';
+  });
+  useEffect(() => { localStorage.setItem('prospectos_sidebar', sidebarCollapsed ? 'collapsed' : 'open'); }, [sidebarCollapsed]);
+
   const [sortBy, setSortBy] = useState<'name' | 'quality' | 'date'>('date');
   const [isReviewingAll, setIsReviewingAll] = useState(false);
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
@@ -261,6 +266,35 @@ export default function App() {
     const data = await response.json();
     setProspects(data);
     setIsReviewingAll(false);
+  };
+
+  const downloadVCF = (prospect: Prospect) => {
+    const nameParts = prospect.name.split(' ');
+    const firstName = nameParts[0] || '';
+    const lastName = nameParts.slice(1).join(' ') || '';
+    const vcf = [
+      'BEGIN:VCARD',
+      'VERSION:3.0',
+      `FN:${prospect.name}`,
+      `N:${lastName};${firstName};;;`,
+      prospect.contact ? `TEL;TYPE=WORK:${prospect.contact}` : '',
+      prospect.email ? `EMAIL;TYPE=WORK:${prospect.email}` : '',
+      prospect.specialty ? `TITLE:${prospect.specialty}` : '',
+      prospect.location ? `ADR;TYPE=WORK:;;${prospect.location};;;;` : '',
+      prospect.category ? `CATEGORIES:${prospect.category}` : '',
+      prospect.source ? `NOTE:Fuente: ${prospect.source}` : '',
+      'END:VCARD',
+    ].filter(Boolean).join('\r\n');
+
+    const blob = new Blob([vcf], { type: 'text/vcard;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${prospect.name.replace(/[^a-zA-Z0-9áéíóúñÁÉÍÓÚÑ ]/g, '')}.vcf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
   };
 
   const handleDiscovery = async () => {
@@ -401,26 +435,31 @@ export default function App() {
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
       {/* Sidebar / Navigation */}
-      <nav className="fixed top-0 left-0 h-screen w-16 md:w-64 bg-white border-r border-slate-200 hidden sm:flex flex-col z-20">
-        <div className="p-6 border-b border-slate-100 flex items-center gap-3">
-          <div className="w-8 h-8 bg-slate-900 rounded flex items-center justify-center text-white">
+      <nav className={`fixed top-0 left-0 h-screen bg-white border-r border-slate-200 hidden sm:flex flex-col z-20 transition-all duration-300 ${sidebarCollapsed ? 'w-16' : 'w-64'}`}>
+        <button
+          onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+          className="p-4 border-b border-slate-100 flex items-center gap-3 w-full hover:bg-slate-50 transition-colors cursor-pointer"
+          title={sidebarCollapsed ? 'Expandir sidebar' : 'Colapsar sidebar'}
+        >
+          <div className="w-8 h-8 bg-slate-900 rounded flex items-center justify-center text-white shrink-0">
             <TrendingUp size={16} />
           </div>
-          <span className="font-semibold text-sm hidden md:block tracking-tight text-slate-900 uppercase">Prospectos</span>
-        </div>
+          {!sidebarCollapsed && <span className="font-semibold text-sm tracking-tight text-slate-900 uppercase">Prospectos</span>}
+        </button>
 
-        <div className="flex-1 px-3 py-6 space-y-1">
+        <div className="flex-1 px-2 py-6 space-y-1 overflow-y-auto">
           {['All', 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'].map((cat) => (
             <button
               key={cat}
               onClick={() => setActiveCategory(cat)}
+              title={cat === 'All' ? 'Todos' : cat}
               className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-all duration-200 ${
-                activeCategory === cat 
-                ? 'bg-slate-900 text-white font-medium' 
+                activeCategory === cat
+                ? 'bg-slate-900 text-white font-medium'
                 : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
               }`}
             >
-              <div className="w-5 flex justify-center">
+              <div className="w-5 flex justify-center shrink-0">
                 {cat === 'All' && <Users size={18} />}
                 {cat === 'Salud' && <Stethoscope size={18} />}
                 {cat === 'Legal' && <Scale size={18} />}
@@ -429,25 +468,27 @@ export default function App() {
                 {cat === 'Profesionales' && <Briefcase size={18} />}
                 {cat === 'Otros' && <Plus size={18} />}
               </div>
-              <span className="hidden md:block text-xs font-medium">{cat === 'All' ? 'Todos los registros' : cat}</span>
+              {!sidebarCollapsed && <span className="text-xs font-medium">{cat === 'All' ? 'Todos los registros' : cat}</span>}
             </button>
           ))}
         </div>
 
-        <div className="p-6 border-t border-slate-100 space-y-4">
-          <div className="hidden md:block">
-            <div className="flex justify-between items-end mb-2">
-              <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Meta Semanal</span>
-              <span className="text-[10px] font-mono text-slate-500">{prospects.length}%</span>
+        <div className="p-4 border-t border-slate-100 space-y-3">
+          {!sidebarCollapsed && (
+            <div>
+              <div className="flex justify-between items-end mb-2">
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total</span>
+                <span className="text-[10px] font-mono text-slate-500">{prospects.length}</span>
+              </div>
+              <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
+                <motion.div
+                  initial={{ width: 0 }}
+                  animate={{ width: `${Math.min(prospects.length, 100)}%` }}
+                  className="bg-slate-900 h-full"
+                />
+              </div>
             </div>
-            <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
-              <motion.div 
-                initial={{ width: 0 }}
-                animate={{ width: `${Math.min(prospects.length, 100)}%` }}
-                className="bg-slate-900 h-full"
-              />
-            </div>
-          </div>
+          )}
         </div>
       </nav>
 
@@ -466,7 +507,7 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <main className="sm:ml-16 md:ml-64 p-6 md:p-10 transition-all duration-500">
+      <main className={`p-6 md:p-10 transition-all duration-300 ${sidebarCollapsed ? 'sm:ml-16' : 'sm:ml-64'}`}>
         <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
           <div>
             <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
@@ -610,18 +651,18 @@ export default function App() {
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Especialidad / Fuente</th>
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ubicación</th>
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Contacto</th>
-                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Detalle</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 <AnimatePresence mode='popLayout'>
                   {filteredProspects.map((prospect) => (
-                    <motion.tr 
+                    <motion.tr
                       key={prospect.id}
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      className="hover:bg-slate-50 transition-colors group cursor-default"
+                      onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
+                      className="hover:bg-slate-50 transition-colors group cursor-pointer"
                     >
                       <td className="px-4 py-4 text-center">
                         {(() => {
@@ -669,14 +710,6 @@ export default function App() {
                           <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
                           <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
                         </div>
-                      </td>
-                      <td className="px-4 py-4 text-right">
-                        <button
-                          onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
-                          className="p-1 px-2 text-[10px] font-bold text-slate-300 group-hover:text-slate-900 transition-colors"
-                        >
-                          VER
-                        </button>
                       </td>
                     </motion.tr>
                   ))}
@@ -1135,19 +1168,26 @@ export default function App() {
                   <p className="text-xs text-slate-600 break-all">{selectedProspect.source}</p>
                 </div>
 
-                {/* Enrich Section */}
-                <div className="border-t border-slate-100 pt-4">
+                {/* Actions */}
+                <div className="border-t border-slate-100 pt-4 flex gap-2">
+                  <button
+                    onClick={() => downloadVCF(selectedProspect)}
+                    className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs"
+                  >
+                    <Contact size={14} /> Descargar VCF
+                  </button>
                   <button
                     disabled={isEnriching}
                     onClick={() => handleEnrich(selectedProspect)}
-                    className="btn-secondary w-full flex items-center justify-center gap-2 text-xs"
+                    className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs"
                   >
                     {isEnriching ? (
-                      <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> Buscando contacto directo...</>
+                      <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> Buscando...</>
                     ) : (
                       <><RefreshCw size={14} /> Buscar contacto directo</>
                     )}
                   </button>
+                </div>
 
                   {enrichResult && (
                     <motion.div
@@ -1206,7 +1246,6 @@ export default function App() {
                       )}
                     </motion.div>
                   )}
-                </div>
               </div>
             </motion.div>
           </div>
