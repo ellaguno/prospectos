@@ -217,11 +217,11 @@ export default function App() {
   const handleDiscovery = async () => {
     if (selectedRoles.length === 0) return;
     setIsDiscovering(true);
+    setShowAdvancedDiscovery(false); // Close modal immediately, process runs in background
     try {
       const allSources = customSource ? [...selectedSources, customSource] : selectedSources;
       const data = await discoverProspects(selectedRoles, discoveryLocation, allSources.join(', '));
       if (data.leads) {
-        // Map the AI leads into our specific categories for reliable filtering
         const mappedLeads = data.leads.map((l: any) => {
           let category: Prospect['category'] = 'Otros';
           const lowerLeadsCat = (l.category || '').toLowerCase();
@@ -232,11 +232,10 @@ export default function App() {
           else if (combined.includes('invers') || combined.includes('empresario') || combined.includes('dueño') || combined.includes('socio')) category = 'Inversión';
           else if (combined.includes('arq') || combined.includes('ing') || combined.includes('const') || combined.includes('civil')) category = 'Arquitectura';
           else if (combined.includes('profesional') || combined.includes('especialista') || combined.includes('consult')) category = 'Profesionales';
-          
+
           return { ...l, category };
         });
         await saveToApi(mappedLeads);
-        setShowAdvancedDiscovery(false);
         setCustomSource('');
       }
     } catch (error) {
@@ -402,6 +401,21 @@ export default function App() {
           </div>
         </div>
       </nav>
+
+      {/* Background process indicator */}
+      <AnimatePresence>
+        {isDiscovering && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 right-4 z-50 bg-slate-900 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-3"
+          >
+            <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs font-medium">Buscando prospectos...</span>
+          </motion.div>
+        )}
+      </AnimatePresence>
 
       <main className="sm:ml-16 md:ml-64 p-6 md:p-10 transition-all duration-500">
         <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
