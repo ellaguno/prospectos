@@ -9,7 +9,7 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
-import * as XLSX from 'xlsx';
+import * as XLSX from 'xlsx-js-style';
 import {
   Users,
   Stethoscope,
@@ -561,33 +561,100 @@ export default function App() {
   };
 
   const exportToExcel = () => {
-    const data = prospects.map(p => ({
-      'Nombre': p.name,
-      'Especialidad': p.specialty,
-      'Ubicación': p.location,
-      'Contacto': p.contact,
-      'Email': p.email || 'N/A',
-      'Categoría': p.category,
-      'Fuente': p.source
-    }));
+    // Sort by category for grouping
+    const sorted = [...prospects].sort((a, b) => a.category.localeCompare(b.category));
 
-    const worksheet = XLSX.utils.json_to_sheet(data);
-    const workbook = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(workbook, worksheet, "Prospectos");
-    
-    // Auto-size columns
-    const colWidths = [
-      { wch: 30 }, // Nombre
-      { wch: 30 }, // Especialidad
-      { wch: 30 }, // Ubicación
-      { wch: 20 }, // Contacto
-      { wch: 25 }, // Email
-      { wch: 15 }, // Categoría
-      { wch: 20 }, // Fuente
+    const headers = ['Nombre', 'Especialidad', 'Ubicación', 'Contacto', 'Email', 'Categoría', 'Calidad', 'Fuente'];
+    const headerStyle = {
+      font: { bold: true, color: { rgb: 'FFFFFF' }, sz: 11 },
+      fill: { fgColor: { rgb: '1E293B' } },
+      alignment: { horizontal: 'center', vertical: 'center' },
+      border: {
+        bottom: { style: 'thin', color: { rgb: '000000' } },
+      },
+    };
+    const categoryStyle = {
+      font: { bold: true, sz: 11, color: { rgb: '1E293B' } },
+      fill: { fgColor: { rgb: 'F1F5F9' } },
+      alignment: { horizontal: 'left' },
+    };
+    const cellBorder = {
+      border: {
+        bottom: { style: 'thin', color: { rgb: 'E2E8F0' } },
+      },
+    };
+
+    const rows: any[][] = [];
+    let currentCategory = '';
+
+    for (const p of sorted) {
+      if (p.category !== currentCategory) {
+        currentCategory = p.category;
+        // Category group header row
+        rows.push([currentCategory, '', '', '', '', '', '', '']);
+      }
+      const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
+      rows.push([
+        p.name,
+        p.specialty,
+        p.location,
+        p.contact,
+        p.email || '',
+        p.category,
+        q === 'direct' ? '● Directo' : q === 'generic' ? '◐ Genérico' : '○ Pendiente',
+        p.source,
+      ]);
+    }
+
+    const worksheet = XLSX.utils.aoa_to_sheet([headers, ...rows]);
+
+    // Style headers (row 0)
+    for (let c = 0; c < headers.length; c++) {
+      const cell = worksheet[XLSX.utils.encode_cell({ r: 0, c })];
+      if (cell) cell.s = headerStyle;
+    }
+
+    // Style category group rows and data cells
+    let rowIdx = 1;
+    currentCategory = '';
+    for (const p of sorted) {
+      if (p.category !== currentCategory) {
+        currentCategory = p.category;
+        // Style category row - merge across all columns
+        for (let c = 0; c < headers.length; c++) {
+          const cell = worksheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
+          if (cell) cell.s = categoryStyle;
+        }
+        // Merge category row
+        if (!worksheet['!merges']) worksheet['!merges'] = [];
+        worksheet['!merges'].push({ s: { r: rowIdx, c: 0 }, e: { r: rowIdx, c: headers.length - 1 } });
+        rowIdx++;
+      }
+      // Style data cells
+      for (let c = 0; c < headers.length; c++) {
+        const cell = worksheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
+        if (cell) cell.s = cellBorder;
+      }
+      // Color the quality cell
+      const qCell = worksheet[XLSX.utils.encode_cell({ r: rowIdx, c: 6 })];
+      if (qCell) {
+        const q = (qCell.v as string) || '';
+        qCell.s = {
+          ...cellBorder,
+          font: { color: { rgb: q.includes('Directo') ? '16A34A' : q.includes('Genérico') ? 'D97706' : '94A3B8' }, bold: true, sz: 10 },
+        };
+      }
+      rowIdx++;
+    }
+
+    worksheet['!cols'] = [
+      { wch: 32 }, { wch: 30 }, { wch: 25 }, { wch: 18 }, { wch: 28 }, { wch: 15 }, { wch: 14 }, { wch: 35 },
     ];
-    worksheet['!cols'] = colWidths;
+    worksheet['!rows'] = [{ hpx: 28 }]; // Header row height
 
-    XLSX.writeFile(workbook, "prospectos.xlsx");
+    const workbook = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(workbook, worksheet, 'Prospectos');
+    XLSX.writeFile(workbook, 'prospectos.xlsx');
   };
 
   const exportToCSV = () => {
