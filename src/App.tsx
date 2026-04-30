@@ -1005,15 +1005,18 @@ export default function App() {
                               <MessageCircle size={14} />
                             </button>
                           )}
-                          {prospect.source && prospect.source.startsWith('http') && (
-                            <button
-                              onClick={() => window.open(prospect.source, '_blank')}
-                              title="Abrir fuente web"
-                              className="p-1.5 text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
-                            >
-                              <Globe size={14} />
-                            </button>
-                          )}
+                          {(() => {
+                            const urlMatch = prospect.source?.match(/(?:https?:\/\/)?([a-zA-Z0-9\-]+(?:\.[a-zA-Z0-9\-]+)+\.[a-zA-Z]{2,})/);
+                            return urlMatch ? (
+                              <button
+                                onClick={() => window.open(urlMatch[0].startsWith('http') ? urlMatch[0] : `https://${urlMatch[0]}`, '_blank')}
+                                title={urlMatch[0]}
+                                className="p-1.5 text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
+                              >
+                                <Globe size={14} />
+                              </button>
+                            ) : null;
+                          })()}
                           <button
                             onClick={() => handleDeleteProspect(prospect)}
                             title="Eliminar"
