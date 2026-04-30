@@ -4,8 +4,8 @@ const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY || "" 
 });
 
-export const discoverProspects = async (categories: string[], location: string = 'Mérida, Yucatán', customSource?: string) => {
-  const prompt = `Actúa como un experto en prospección inmobiliaria en México. 
+export const discoverProspects = async (categories: string[], location: string = 'Ciudad de México', customSource?: string) => {
+  const prompt = `Actúa como un experto en prospección de clientes en México. 
   Busca y genera una lista de 20 prospectos REALES de alto perfil en ${location}.
   Tipos de perfil solicitado: ${categories.join(', ')}.
   ${customSource ? `PRIORIZA buscar en esta fuente específica: ${customSource}.` : "Puedes buscar en Google, LinkedIn, directorios profesionales y sitios especializados regionales (Sección Amarilla, Doctoralia, etc.)."}

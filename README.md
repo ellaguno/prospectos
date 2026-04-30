@@ -1,6 +1,6 @@
-# Prospectos - CRM de Prospección Inmobiliaria
+# Prospectos - CRM de Prospección
 
-CRM para prospección inmobiliaria con IA. Descubre prospectos de alto perfil usando búsqueda inteligente y extrae leads de texto pegado.
+CRM de prospección con IA. Descubre prospectos de alto perfil usando scraping + IA y extrae leads de texto pegado.
 
 ## Funcionalidades
 

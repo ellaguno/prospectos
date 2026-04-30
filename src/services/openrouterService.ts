@@ -27,7 +27,7 @@ async function callOpenRouter(prompt: string): Promise<any> {
       messages: [
         {
           role: "system",
-          content: "Eres un asistente experto en prospección inmobiliaria en México. SIEMPRE responde ÚNICAMENTE con JSON válido, sin markdown, sin bloques de código, sin texto adicional."
+          content: "Eres un asistente experto en prospección de clientes en México. SIEMPRE responde ÚNICAMENTE con JSON válido, sin markdown, sin bloques de código, sin texto adicional."
         },
         {
           role: "user",
@@ -54,8 +54,8 @@ async function callOpenRouter(prompt: string): Promise<any> {
   return JSON.parse(jsonMatch[0]);
 }
 
-export const discoverProspects = async (categories: string[], location: string = 'Mérida, Yucatán', customSource?: string) => {
-  const prompt = `Actúa como un experto en prospección inmobiliaria en México.
+export const discoverProspects = async (categories: string[], location: string = 'Ciudad de México', customSource?: string) => {
+  const prompt = `Actúa como un experto en prospección de clientes en México.
   Busca y genera una lista de 20 prospectos REALES de alto perfil en ${location}.
   Tipos de perfil solicitado: ${categories.join(', ')}.
   ${customSource ? `PRIORIZA buscar en esta fuente específica: ${customSource}.` : "Busca en directorios profesionales y sitios especializados regionales (Sección Amarilla, Doctoralia, etc.)."}

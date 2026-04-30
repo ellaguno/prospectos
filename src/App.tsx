@@ -46,14 +46,40 @@ export default function App() {
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
-  const [selectedRoles, setSelectedRoles] = useState<string[]>(['Doctores']);
-  const [discoveryLocation, setDiscoveryLocation] = useState<string>('Mérida, Yucatán');
+  const [selectedRoles, setSelectedRoles] = useState<string[]>(() => {
+    const saved = localStorage.getItem('prospectos_roles');
+    return saved ? JSON.parse(saved) : ['Doctores'];
+  });
+  const [discoveryLocation, setDiscoveryLocation] = useState<string>(() => {
+    return localStorage.getItem('prospectos_location') || 'Ciudad de México';
+  });
   const [isAdding, setIsAdding] = useState(false);
   const [isDiscovering, setIsDiscovering] = useState(false);
   const [clipboardText, setClipboardText] = useState('');
   const [showClipboard, setShowClipboard] = useState(false);
   const [customSource, setCustomSource] = useState('');
   const [showAdvancedDiscovery, setShowAdvancedDiscovery] = useState(false);
+  const [customCity, setCustomCity] = useState('');
+  const [cities, setCities] = useState<string[]>(() => {
+    const saved = localStorage.getItem('prospectos_cities');
+    return saved ? JSON.parse(saved) : ['Ciudad de México', 'Monterrey', 'Guadalajara', 'Querétaro', 'Puebla', 'Mérida', 'León', 'Tijuana'];
+  });
+  const [sources, setSources] = useState<string[]>(() => {
+    const saved = localStorage.getItem('prospectos_sources');
+    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla', 'Google Maps'];
+  });
+  const [selectedSources, setSelectedSources] = useState<string[]>(() => {
+    const saved = localStorage.getItem('prospectos_selected_sources');
+    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla'];
+  });
+  const [newSource, setNewSource] = useState('');
+
+  // Persist preferences
+  useEffect(() => { localStorage.setItem('prospectos_roles', JSON.stringify(selectedRoles)); }, [selectedRoles]);
+  useEffect(() => { localStorage.setItem('prospectos_location', discoveryLocation); }, [discoveryLocation]);
+  useEffect(() => { localStorage.setItem('prospectos_cities', JSON.stringify(cities)); }, [cities]);
+  useEffect(() => { localStorage.setItem('prospectos_sources', JSON.stringify(sources)); }, [sources]);
+  useEffect(() => { localStorage.setItem('prospectos_selected_sources', JSON.stringify(selectedSources)); }, [selectedSources]);
 
   // Sync with SQLite API
   useEffect(() => {
@@ -112,7 +138,8 @@ export default function App() {
     if (selectedRoles.length === 0) return;
     setIsDiscovering(true);
     try {
-      const data = await discoverProspects(selectedRoles, discoveryLocation, customSource);
+      const allSources = customSource ? [...selectedSources, customSource] : selectedSources;
+      const data = await discoverProspects(selectedRoles, discoveryLocation, allSources.join(', '));
       if (data.leads) {
         // Map the AI leads into our specific categories for reliable filtering
         const mappedLeads = data.leads.map((l: any) => {
@@ -196,7 +223,7 @@ export default function App() {
     ];
     worksheet['!cols'] = colWidths;
 
-    XLSX.writeFile(workbook, "prospectos_yucatan_inmuebles.xlsx");
+    XLSX.writeFile(workbook, "prospectos.xlsx");
   };
 
   const exportToCSV = () => {
@@ -219,7 +246,7 @@ export default function App() {
     
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", "prospectos_yucatan_inmuebles.csv");
+    link.setAttribute("download", "prospectos.csv");
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -251,7 +278,7 @@ export default function App() {
           <div className="w-8 h-8 bg-slate-900 rounded flex items-center justify-center text-white">
             <TrendingUp size={16} />
           </div>
-          <span className="font-semibold text-sm hidden md:block tracking-tight text-slate-900 uppercase">Prospect CRM</span>
+          <span className="font-semibold text-sm hidden md:block tracking-tight text-slate-900 uppercase">Prospectos</span>
         </div>
 
         <div className="flex-1 px-3 py-6 space-y-1">
@@ -300,11 +327,11 @@ export default function App() {
         <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
           <div>
             <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
-              <span>Mérida & Nacional</span>
+              <span>{discoveryLocation}</span>
               <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
-              <span>CRM v2.0</span>
+              <span>CRM</span>
             </div>
-            <h1 className="text-4xl font-light text-slate-900 tracking-tight">Prospección Inmobiliaria</h1>
+            <h1 className="text-4xl font-light text-slate-900 tracking-tight">Prospectos</h1>
           </div>
           
           <div className="flex flex-wrap items-center gap-2">
@@ -478,36 +505,18 @@ export default function App() {
         {/* Resources Grid */}
         <section className="mt-20">
           <div className="flex items-center gap-4 mb-8">
-            <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-900">Estrategia de Prospección</h2>
+            <h2 className="text-sm font-bold uppercase tracking-[0.2em] text-slate-900">Fuentes de Búsqueda</h2>
             <div className="h-px flex-1 bg-slate-200" />
           </div>
           
           <div className="grid md:grid-cols-3 gap-6">
-            {[
-              {
-                id: '01',
-                title: 'Doctoralia Network',
-                link: 'https://www.doctoralia.com.mx/merida',
-                desc: 'Minería de perfiles médicos de alto nivel en zonas residenciales.'
-              },
-              {
-                id: '02',
-                title: 'Professional Hubs',
-                link: 'https://www.seccionamarilla.com.mx',
-                desc: 'Extracción de despachos legales y firmas de arquitectura locales.'
-              },
-              {
-                id: '03',
-                title: 'Enterprise Search',
-                link: '#',
-                desc: 'Identificación de inversionistas y directivos de cámaras empresariales.'
-              }
-            ].map((resource, i) => (
+            {sources.map((source, i) => (
               <div key={i} className="group cursor-pointer">
-                <div className="text-slate-900 font-mono text-xs mb-3">{resource.id}</div>
-                <h3 className="font-semibold text-slate-900 mb-2 group-hover:underline underline-offset-4">{resource.title}</h3>
-                <p className="text-xs text-slate-500 leading-relaxed mb-4">{resource.desc}</p>
-                <a href={resource.link} target="_blank" rel="noreferrer" className="text-[10px] font-bold text-slate-400 hover:text-slate-900 transition-colors tracking-widest uppercase">Launch Source</a>
+                <div className="text-slate-900 font-mono text-xs mb-3">{String(i + 1).padStart(2, '0')}</div>
+                <h3 className="font-semibold text-slate-900 mb-2">{source}</h3>
+                <p className="text-xs text-slate-500 leading-relaxed mb-4">
+                  {selectedSources.includes(source) ? 'Activa' : 'Inactiva'}
+                </p>
               </div>
             ))}
           </div>
@@ -533,12 +542,12 @@ export default function App() {
             >
               <h2 className="text-2xl font-light text-slate-900 mb-8 border-b border-slate-100 pb-6">Descubrimiento Inteligente</h2>
               
-              <div className="space-y-8">
+              <div className="space-y-8 max-h-[60vh] overflow-y-auto pr-2">
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Ubicación Geográfica</label>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Ubicación</label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {['Mérida, Yucatán', 'Ciudad de México', 'Monterrey', 'Guadalajara', 'Querétaro', 'Todo México'].map(loc => (
-                      <button 
+                    {cities.map(loc => (
+                      <button
                         key={loc}
                         title={loc}
                         type="button"
@@ -553,6 +562,35 @@ export default function App() {
                       </button>
                     ))}
                   </div>
+                  <div className="flex items-center gap-2 mt-3">
+                    <input
+                      type="text"
+                      className="flex-1 px-0 py-1 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-xs"
+                      placeholder="Agregar ciudad..."
+                      value={customCity}
+                      onChange={e => setCustomCity(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && customCity.trim()) {
+                          if (!cities.includes(customCity.trim())) {
+                            setCities([...cities, customCity.trim()]);
+                          }
+                          setDiscoveryLocation(customCity.trim());
+                          setCustomCity('');
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (customCity.trim() && !cities.includes(customCity.trim())) {
+                          setCities([...cities, customCity.trim()]);
+                          setDiscoveryLocation(customCity.trim());
+                          setCustomCity('');
+                        }
+                      }}
+                      className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase"
+                    >+ Agregar</button>
+                  </div>
                 </div>
 
                 <div>
@@ -561,7 +599,7 @@ export default function App() {
                     {['Doctores', 'Abogados', 'Notarios', 'Inversionistas', 'Empresarios', 'Ingenieros', 'Arquitectos', 'Candidatos', 'Especialistas'].map(role => {
                       const isSelected = selectedRoles.includes(role);
                       return (
-                        <button 
+                        <button
                           key={role}
                           title={role}
                           type="button"
@@ -586,11 +624,75 @@ export default function App() {
                 </div>
 
                 <div>
-                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Fuente Alternativa</label>
-                  <input 
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Fuentes de Búsqueda</label>
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+                    {sources.map(src => {
+                      const isSelected = selectedSources.includes(src);
+                      return (
+                        <button
+                          key={src}
+                          type="button"
+                          onClick={() => {
+                            if (isSelected) {
+                              setSelectedSources(selectedSources.filter(s => s !== src));
+                            } else {
+                              setSelectedSources([...selectedSources, src]);
+                            }
+                          }}
+                          className={`px-3 py-2 text-[10px] font-medium border transition-all ${
+                            isSelected
+                            ? 'bg-slate-900 text-white border-slate-900'
+                            : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                          }`}
+                        >
+                          {src}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center gap-2 mt-3">
+                    <input
+                      type="text"
+                      className="flex-1 px-0 py-1 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-xs"
+                      placeholder="Agregar fuente (ej. LinkedIn, Yahoo, etc.)..."
+                      value={newSource}
+                      onChange={e => setNewSource(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newSource.trim()) {
+                          if (!sources.includes(newSource.trim())) {
+                            setSources([...sources, newSource.trim()]);
+                          }
+                          if (!selectedSources.includes(newSource.trim())) {
+                            setSelectedSources([...selectedSources, newSource.trim()]);
+                          }
+                          setNewSource('');
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (newSource.trim()) {
+                          if (!sources.includes(newSource.trim())) {
+                            setSources([...sources, newSource.trim()]);
+                          }
+                          if (!selectedSources.includes(newSource.trim())) {
+                            setSelectedSources([...selectedSources, newSource.trim()]);
+                          }
+                          setNewSource('');
+                        }
+                      }}
+                      className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase"
+                    >+ Agregar</button>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Fuente adicional (URL o nombre)</label>
+                  <input
                     type="text"
                     className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 transition-colors text-sm"
-                    placeholder="Ej. LinkedIn, Directorio Médico..."
+                    placeholder="Ej. https://directorio.com o nombre de directorio..."
                     value={customSource}
                     onChange={e => setCustomSource(e.target.value)}
                   />

@@ -1,19 +1,32 @@
-import * as gemini from "./geminiService";
-import * as openrouter from "./openrouterService";
+// All AI calls go through the server (scraping + OpenRouter)
+// No API keys needed in the frontend
 
-// AI_PROVIDER options:
-// "gemini"      - Gemini for everything
-// "openrouter"  - OpenRouter for everything
-// "hybrid"      - Gemini for discovery (needs Google Search), OpenRouter for extraction
-const provider = process.env.AI_PROVIDER || "gemini";
+export const discoverProspects = async (categories: string[], location: string = 'Ciudad de México', customSource?: string) => {
+  const response = await fetch('/api/discover', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ categories, location, customSource }),
+  });
 
-export const discoverProspects: typeof gemini.discoverProspects = (...args) => {
-  if (provider === "openrouter") return openrouter.discoverProspects(...args);
-  // hybrid and gemini both use Gemini for discovery (Google Search)
-  return gemini.discoverProspects(...args);
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Discovery failed');
+  }
+
+  return response.json();
 };
 
-export const extractFromText: typeof gemini.extractFromText = (...args) => {
-  if (provider === "openrouter" || provider === "hybrid") return openrouter.extractFromText(...args);
-  return gemini.extractFromText(...args);
+export const extractFromText = async (textContent: string) => {
+  const response = await fetch('/api/extract', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: textContent }),
+  });
+
+  if (!response.ok) {
+    const err = await response.json();
+    throw new Error(err.error || 'Extraction failed');
+  }
+
+  return response.json();
 };
