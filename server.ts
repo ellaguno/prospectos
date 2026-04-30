@@ -366,17 +366,35 @@ Responde ÚNICAMENTE con JSON válido:
   // Update a prospect
   app.patch("/api/prospects/:id", (req, res) => {
     const { id } = req.params;
-    const { contact, email, contactQuality } = req.body;
+    const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality'];
     try {
       const updates: string[] = [];
       const values: any[] = [];
-      if (contact !== undefined) { updates.push("contact = ?"); values.push(contact); }
-      if (email !== undefined) { updates.push("email = ?"); values.push(email); }
-      if (contactQuality !== undefined) { updates.push("contactQuality = ?"); values.push(contactQuality); }
+      for (const field of allowedFields) {
+        if (req.body[field] !== undefined) {
+          updates.push(`${field} = ?`);
+          values.push(req.body[field]);
+        }
+      }
       if (updates.length === 0) return res.json({ message: "Nothing to update" });
       values.push(id);
       db.prepare(`UPDATE prospects SET ${updates.join(", ")} WHERE id = ?`).run(...values);
       res.json({ message: "Actualizado" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Delete prospects (accepts array of IDs)
+  app.delete("/api/prospects", (req, res) => {
+    const { ids } = req.body;
+    if (!ids || !Array.isArray(ids) || ids.length === 0) {
+      return res.status(400).json({ error: "ids array required" });
+    }
+    try {
+      const placeholders = ids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM prospects WHERE id IN (${placeholders})`).run(...ids);
+      res.json({ message: `${ids.length} prospecto(s) eliminado(s)` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

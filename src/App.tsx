@@ -27,7 +27,10 @@ import {
   CheckCircle,
   RefreshCw,
   X,
-  Contact
+  Contact,
+  Trash2,
+  MessageCircle,
+  Globe
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
@@ -120,6 +123,8 @@ export default function App() {
   const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
   const [isEnriching, setIsEnriching] = useState(false);
   const [enrichResult, setEnrichResult] = useState<any>(null);
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState<Partial<Prospect>>({});
 
   const handleEnrich = async (prospect: Prospect) => {
     setIsEnriching(true);
@@ -216,6 +221,7 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prospectos_sidebar', sidebarCollapsed ? 'collapsed' : 'open'); }, [sidebarCollapsed]);
 
   const [sortBy, setSortBy] = useState<'name' | 'quality' | 'date'>('date');
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isReviewingAll, setIsReviewingAll] = useState(false);
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
 
@@ -331,6 +337,161 @@ export default function App() {
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  };
+
+  const toggleSelect = (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = () => {
+    if (selectedIds.size === filteredProspects.length) {
+      setSelectedIds(new Set());
+    } else {
+      setSelectedIds(new Set(filteredProspects.map(p => p.id)));
+    }
+  };
+
+  const handleBulkDelete = async () => {
+    if (selectedIds.size === 0) return;
+    if (!confirm(`¿Eliminar ${selectedIds.size} prospecto(s)? Esta acción no se puede deshacer.`)) return;
+    try {
+      await fetch('/api/prospects', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [...selectedIds] }),
+      });
+      const response = await fetch('/api/prospects');
+      const data = await response.json();
+      setProspects(data);
+      setSelectedIds(new Set());
+    } catch (error) {
+      console.error("Delete failed", error);
+    }
+  };
+
+  const handleBulkOsint = async () => {
+    if (selectedIds.size === 0) return;
+    const targets = prospects.filter(p => selectedIds.has(p.id));
+    setIsReviewingAll(true);
+    setReviewProgress({ done: 0, total: targets.length });
+
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i];
+      const quality = detectContactQuality(p.contact, p.email || '');
+      try {
+        await fetch(`/api/prospects/${p.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactQuality: quality }),
+        });
+      } catch {}
+      if (quality !== 'direct') {
+        try {
+          const enrichRes = await fetch('/api/enrich', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: p.name, specialty: p.specialty, location: p.location, contact: p.contact, email: p.email }),
+          });
+          const enrichData = await enrichRes.json();
+          if (enrichData.direct_phone || enrichData.direct_email) {
+            const newContact = enrichData.direct_phone || p.contact;
+            const newEmail = enrichData.direct_email || p.email;
+            const newQuality = detectContactQuality(newContact, newEmail);
+            await fetch(`/api/prospects/${p.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: newQuality }),
+            });
+          }
+        } catch {}
+      }
+      setReviewProgress({ done: i + 1, total: targets.length });
+    }
+
+    const response = await fetch('/api/prospects');
+    const data = await response.json();
+    setProspects(data);
+    setIsReviewingAll(false);
+    setSelectedIds(new Set());
+  };
+
+  const handleBulkVCF = () => {
+    if (selectedIds.size === 0) return;
+    const targets = prospects.filter(p => selectedIds.has(p.id));
+    const vcfAll = targets.map(prospect => {
+      const nameParts = prospect.name.split(' ');
+      const firstName = nameParts[0] || '';
+      const lastName = nameParts.slice(1).join(' ') || '';
+      return [
+        'BEGIN:VCARD',
+        'VERSION:3.0',
+        `FN:${prospect.name}`,
+        `N:${lastName};${firstName};;;`,
+        prospect.contact ? `TEL;TYPE=WORK:${prospect.contact}` : '',
+        prospect.email ? `EMAIL;TYPE=WORK:${prospect.email}` : '',
+        prospect.specialty ? `TITLE:${prospect.specialty}` : '',
+        prospect.location ? `ADR;TYPE=WORK:;;${prospect.location};;;;` : '',
+        prospect.category ? `CATEGORIES:${prospect.category}` : '',
+        prospect.source ? `NOTE:Fuente: ${prospect.source}` : '',
+        'END:VCARD',
+      ].filter(Boolean).join('\r\n');
+    }).join('\r\n');
+
+    const blob = new Blob([vcfAll], { type: 'text/vcard;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `prospectos_${targets.length}.vcf`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
+  const startEditing = (prospect: Prospect) => {
+    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source });
+    setIsEditing(true);
+  };
+
+  const handleSaveEdit = async () => {
+    if (!selectedProspect) return;
+    try {
+      await fetch(`/api/prospects/${selectedProspect.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...editForm, contactQuality: detectContactQuality(editForm.contact || '', editForm.email || '') }),
+      });
+      const response = await fetch('/api/prospects');
+      const data = await response.json();
+      setProspects(data);
+      const updated = data.find((p: Prospect) => p.id === selectedProspect.id);
+      if (updated) setSelectedProspect(updated);
+      setIsEditing(false);
+    } catch (error) {
+      console.error("Save edit failed", error);
+    }
+  };
+
+  const handleDeleteProspect = async (prospect: Prospect) => {
+    if (!confirm(`¿Eliminar "${prospect.name}"?`)) return;
+    try {
+      await fetch('/api/prospects', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ids: [prospect.id] }),
+      });
+      const response = await fetch('/api/prospects');
+      const data = await response.json();
+      setProspects(data);
+      setSelectedProspect(null);
+    } catch (error) {
+      console.error("Delete failed", error);
+    }
   };
 
   const handleDiscovery = async () => {
@@ -679,12 +840,52 @@ export default function App() {
           </div>
         </div>
 
+        {/* Bulk Actions Bar */}
+        {selectedIds.size > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-4 p-3 bg-slate-900 text-white rounded-lg flex items-center gap-3"
+          >
+            <span className="text-xs font-medium">{selectedIds.size} seleccionado(s)</span>
+            <div className="h-4 w-px bg-slate-600" />
+            <button onClick={handleBulkDelete} className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-red-500/20 hover:bg-red-500/40 rounded transition-colors">
+              <Trash2 size={12} /> Eliminar
+            </button>
+            <button
+              onClick={handleBulkOsint}
+              disabled={isReviewingAll}
+              className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors"
+            >
+              {isReviewingAll ? (
+                <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> {reviewProgress.done}/{reviewProgress.total}</>
+              ) : (
+                <><CheckCircle size={12} /> Calificar + OSINT</>
+              )}
+            </button>
+            <button onClick={handleBulkVCF} className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors">
+              <Contact size={12} /> Exportar VCF
+            </button>
+            <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs text-slate-400 hover:text-white transition-colors">
+              Deseleccionar
+            </button>
+          </motion.div>
+        )}
+
         {/* Prospect Table */}
         <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden mb-12">
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
+                  <th className="px-2 py-4 w-8 text-center">
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.size === filteredProspects.length && filteredProspects.length > 0}
+                      onChange={toggleSelectAll}
+                      className="w-3.5 h-3.5 rounded border-slate-300 cursor-pointer"
+                    />
+                  </th>
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest w-8 text-center">
                     <span title="Confianza">Q</span>
                   </th>
@@ -692,6 +893,7 @@ export default function App() {
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Especialidad / Fuente</th>
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ubicación</th>
                   <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Contacto</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Acciones</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -705,6 +907,15 @@ export default function App() {
                       onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
                       className="hover:bg-slate-50 transition-colors group cursor-pointer"
                     >
+                      <td className="px-2 py-4 text-center" onClick={e => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={selectedIds.has(prospect.id)}
+                          onChange={() => {}}
+                          onClick={(e) => toggleSelect(prospect.id, e)}
+                          className="w-3.5 h-3.5 rounded border-slate-300 cursor-pointer"
+                        />
+                      </td>
                       <td className="px-4 py-4 text-center">
                         {(() => {
                           const q = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
@@ -750,6 +961,66 @@ export default function App() {
                         <div className="flex flex-col gap-0.5">
                           <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
                           <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => {
+                              const q = detectContactQuality(prospect.contact, prospect.email || '');
+                              fetch(`/api/prospects/${prospect.id}`, {
+                                method: 'PATCH',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ contactQuality: q }),
+                              }).then(() => fetch('/api/prospects').then(r => r.json()).then(setProspects));
+                            }}
+                            title="Calificar"
+                            className="p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded transition-colors"
+                          >
+                            <CheckCircle size={14} />
+                          </button>
+                          <button
+                            onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); handleEnrich(prospect); }}
+                            title="OSINT"
+                            className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded transition-colors"
+                          >
+                            <RefreshCw size={14} />
+                          </button>
+                          <button
+                            onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); startEditing(prospect); }}
+                            title="Editar"
+                            className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors"
+                          >
+                            <ExternalLink size={14} />
+                          </button>
+                          {prospect.contact && (
+                            <button
+                              onClick={() => {
+                                const phone = prospect.contact.replace(/[\s\-().+]/g, '').replace(/^52/, '');
+                                window.open(`https://wa.me/52${phone}`, '_blank');
+                              }}
+                              title="WhatsApp"
+                              className="p-1.5 text-slate-400 hover:text-green-500 hover:bg-green-50 rounded transition-colors"
+                            >
+                              <MessageCircle size={14} />
+                            </button>
+                          )}
+                          {prospect.source && prospect.source.startsWith('http') && (
+                            <button
+                              onClick={() => window.open(prospect.source, '_blank')}
+                              title="Abrir fuente web"
+                              className="p-1.5 text-slate-400 hover:text-indigo-500 hover:bg-indigo-50 rounded transition-colors"
+                            >
+                              <Globe size={14} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => handleDeleteProspect(prospect)}
+                            title="Eliminar"
+                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
                         </div>
                       </td>
                     </motion.tr>
@@ -1139,7 +1410,7 @@ export default function App() {
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
-              onClick={() => setSelectedProspect(null)}
+              onClick={() => { setSelectedProspect(null); setIsEditing(false); }}
               className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
             />
             <motion.div
@@ -1149,12 +1420,57 @@ export default function App() {
               className="relative w-full max-w-lg bg-white border border-slate-900 shadow-2xl p-10 max-h-[85vh] overflow-y-auto"
             >
               <button
-                onClick={() => setSelectedProspect(null)}
+                onClick={() => { setSelectedProspect(null); setIsEditing(false); }}
                 className="absolute top-4 right-4 text-slate-400 hover:text-slate-900"
               >
                 <X size={18} />
               </button>
 
+              {isEditing ? (
+                /* Edit Mode */
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Nombre</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Especialidad</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.specialty || ''} onChange={e => setEditForm({...editForm, specialty: e.target.value})} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Categoría</label>
+                      <select className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.category || 'Otros'} onChange={e => setEditForm({...editForm, category: e.target.value as any})}>
+                        <option>Salud</option><option>Legal</option><option>Inversión</option><option>Arquitectura</option><option>Profesionales</option><option>Otros</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Ubicación</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.location || ''} onChange={e => setEditForm({...editForm, location: e.target.value})} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.contact || ''} onChange={e => setEditForm({...editForm, contact: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.email || ''} onChange={e => setEditForm({...editForm, email: e.target.value})} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Fuente</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.source || ''} onChange={e => setEditForm({...editForm, source: e.target.value})} />
+                  </div>
+                  <div className="flex gap-2 pt-4 border-t border-slate-100">
+                    <button onClick={handleSaveEdit} className="btn-primary flex-1 text-xs">Guardar</button>
+                    <button onClick={() => setIsEditing(false)} className="btn-secondary flex-1 text-xs">Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                /* View Mode */
+                <>
               <h2 className="text-xl font-medium text-slate-900 mb-1">{selectedProspect.name}</h2>
               <p className="text-xs text-slate-500 mb-6">{selectedProspect.specialty}</p>
 
@@ -1212,10 +1528,16 @@ export default function App() {
                 {/* Actions */}
                 <div className="border-t border-slate-100 pt-4 flex gap-2">
                   <button
+                    onClick={() => startEditing(selectedProspect)}
+                    className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs"
+                  >
+                    <ExternalLink size={14} /> Editar
+                  </button>
+                  <button
                     onClick={() => downloadVCF(selectedProspect)}
                     className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs"
                   >
-                    <Contact size={14} /> Descargar VCF
+                    <Contact size={14} /> VCF
                   </button>
                   <button
                     disabled={isEnriching}
@@ -1225,8 +1547,14 @@ export default function App() {
                     {isEnriching ? (
                       <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> Buscando...</>
                     ) : (
-                      <><RefreshCw size={14} /> Buscar contacto directo</>
+                      <><RefreshCw size={14} /> OSINT</>
                     )}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteProspect(selectedProspect)}
+                    className="flex items-center justify-center gap-2 text-xs px-3 py-2 border border-red-200 text-red-500 hover:bg-red-50 rounded transition-colors"
+                  >
+                    <Trash2 size={14} />
                   </button>
                 </div>
 
@@ -1297,6 +1625,8 @@ export default function App() {
                     </motion.div>
                   )}
               </div>
+                </>
+              )}
             </motion.div>
           </div>
         )}
