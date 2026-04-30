@@ -205,14 +205,63 @@ export default function App() {
     source: ''
   });
 
+  const [sortBy, setSortBy] = useState<'name' | 'quality' | 'date'>('date');
+  const [isReviewingAll, setIsReviewingAll] = useState(false);
+  const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
+
   const filteredProspects = useMemo(() => {
-    return prospects.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) || 
+    const filtered = prospects.filter(p => {
+      const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             p.specialty.toLowerCase().includes(searchTerm.toLowerCase());
       const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
       return matchesSearch && matchesCategory;
     });
-  }, [prospects, searchTerm, activeCategory]);
+
+    // Sort
+    const qualityOrder = { direct: 0, generic: 1, pending: 2 };
+    if (sortBy === 'quality') {
+      filtered.sort((a, b) => {
+        const qa = qualityOrder[a.contactQuality || detectContactQuality(a.contact, a.email || '')] ?? 2;
+        const qb = qualityOrder[b.contactQuality || detectContactQuality(b.contact, b.email || '')] ?? 2;
+        return qa - qb;
+      });
+    } else if (sortBy === 'name') {
+      filtered.sort((a, b) => a.name.localeCompare(b.name));
+    }
+    // 'date' keeps default DB order (createdAt DESC)
+
+    return filtered;
+  }, [prospects, searchTerm, activeCategory, sortBy]);
+
+  const handleReviewAll = async () => {
+    const pending = prospects.filter(p => {
+      const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
+      return q === 'pending' || !p.contactQuality;
+    });
+    if (pending.length === 0) return;
+
+    setIsReviewingAll(true);
+    setReviewProgress({ done: 0, total: pending.length });
+
+    for (let i = 0; i < pending.length; i++) {
+      const p = pending[i];
+      const quality = detectContactQuality(p.contact, p.email || '');
+      try {
+        await fetch(`/api/prospects/${p.id}`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ contactQuality: quality }),
+        });
+      } catch {}
+      setReviewProgress({ done: i + 1, total: pending.length });
+    }
+
+    // Refresh
+    const response = await fetch('/api/prospects');
+    const data = await response.json();
+    setProspects(data);
+    setIsReviewingAll(false);
+  };
 
   const handleDiscovery = async () => {
     if (selectedRoles.length === 0) return;
@@ -512,16 +561,40 @@ export default function App() {
           ))}
         </div>
 
-        {/* Search Bar */}
-        <div className="relative mb-8 group">
-          <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" size={18} />
-          <input 
-            type="text" 
-            placeholder="Filtrar por nombre, especialidad o ubicación..."
-            className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 focus:outline-none focus:border-slate-900 transition-all text-sm text-slate-900"
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
+        {/* Search Bar + Controls */}
+        <div className="flex flex-col sm:flex-row gap-3 mb-8">
+          <div className="relative flex-1 group">
+            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 group-focus-within:text-slate-900 transition-colors" size={18} />
+            <input
+              type="text"
+              placeholder="Filtrar por nombre, especialidad o ubicación..."
+              className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 focus:outline-none focus:border-slate-900 transition-all text-sm text-slate-900"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={sortBy}
+              onChange={e => setSortBy(e.target.value as any)}
+              className="px-3 py-2 bg-white border border-slate-200 text-xs text-slate-600 focus:outline-none focus:border-slate-900"
+            >
+              <option value="date">Recientes</option>
+              <option value="quality">Confianza</option>
+              <option value="name">Nombre</option>
+            </select>
+            <button
+              disabled={isReviewingAll}
+              onClick={handleReviewAll}
+              className="btn-secondary text-xs whitespace-nowrap flex items-center gap-2"
+            >
+              {isReviewingAll ? (
+                <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> {reviewProgress.done}/{reviewProgress.total}</>
+              ) : (
+                <><CheckCircle size={14} /> Evaluar todos</>
+              )}
+            </button>
+          </div>
         </div>
 
         {/* Prospect Table */}
@@ -530,11 +603,14 @@ export default function App() {
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50 border-b border-slate-200">
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Identidad</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Especialidad / Fuente</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ubicación</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Contacto</th>
-                  <th className="px-6 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Detalle</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest w-8 text-center">
+                    <span title="Confianza">Q</span>
+                  </th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Identidad</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Especialidad / Fuente</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ubicación</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Contacto</th>
+                  <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Detalle</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
@@ -547,7 +623,23 @@ export default function App() {
                       exit={{ opacity: 0 }}
                       className="hover:bg-slate-50 transition-colors group cursor-default"
                     >
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4 text-center">
+                        {(() => {
+                          const q = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
+                          return (
+                            <div className={`w-3 h-3 rounded-full mx-auto ${
+                              q === 'direct' ? 'bg-emerald-400' :
+                              q === 'generic' ? 'bg-amber-400' :
+                              'bg-slate-300'
+                            }`} title={
+                              q === 'direct' ? 'Contacto directo' :
+                              q === 'generic' ? 'Contacto genérico' :
+                              'Sin evaluar'
+                            } />
+                          );
+                        })()}
+                      </td>
+                      <td className="px-4 py-4">
                         <div>
                           <p className="font-medium text-sm text-slate-900">{prospect.name}</p>
                           <div className="flex items-center gap-1.5 mt-1">
@@ -562,32 +654,23 @@ export default function App() {
                           </div>
                         </div>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <p className="text-xs text-slate-600">{prospect.specialty}</p>
-                        <p className="text-[10px] font-mono text-slate-400 mt-1">{prospect.source}</p>
+                        <p className="text-[10px] font-mono text-slate-400 mt-1 truncate max-w-[200px]">{prospect.source}</p>
                       </td>
-                      <td className="px-6 py-4">
+                      <td className="px-4 py-4">
                         <div className="flex items-center gap-1.5 text-xs text-slate-500">
-                          <MapPin size={12} className="text-slate-300" />
-                          {prospect.location}
+                          <MapPin size={12} className="text-slate-300 shrink-0" />
+                          <span className="truncate max-w-[180px]">{prospect.location}</span>
                         </div>
                       </td>
-                      <td className="px-6 py-4">
-                        {(() => {
-                          const quality = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
-                          return (
-                            <div className="flex flex-col gap-0.5">
-                              <div className="flex items-center gap-1.5">
-                                <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
-                                {quality === 'generic' && <AlertTriangle size={12} className="text-amber-400" title="Contacto genérico" />}
-                                {quality === 'direct' && <CheckCircle size={12} className="text-emerald-500" title="Contacto directo" />}
-                              </div>
-                              <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
-                            </div>
-                          );
-                        })()}
+                      <td className="px-4 py-4">
+                        <div className="flex flex-col gap-0.5">
+                          <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
+                          <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
+                        </div>
                       </td>
-                      <td className="px-6 py-4 text-right">
+                      <td className="px-4 py-4 text-right">
                         <button
                           onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
                           className="p-1 px-2 text-[10px] font-bold text-slate-300 group-hover:text-slate-900 transition-colors"
