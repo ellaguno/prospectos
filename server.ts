@@ -435,19 +435,12 @@ Responde ÚNICAMENTE con JSON válido:
     return !genericPrefixes.some(g => prefix === g || prefix.startsWith(g + '.'));
   }
 
-  // Full OSINT enrichment: search multiple queries, scrape results, extract contacts
-  async function osintEnrich(name: string, specialty: string, location: string): Promise<{ emails: string[], phones: string[], sources: string[] }> {
-    const queries = [
-      `"${name}" ${specialty} ${location} contacto teléfono email`,
-      `"${name}" ${specialty} celular correo`,
-      `"${name}" ${location} linkedin`,
-    ];
-
+  // Full OSINT enrichment with DuckDuckGo
+  async function osintSearchAndScrape(queries: string[]): Promise<{ emails: string[], phones: string[], sources: string[] }> {
     const allEmails: string[] = [];
     const allPhones: string[] = [];
     const sources: string[] = [];
 
-    // Search DuckDuckGo for each query
     const allLinks: string[] = [];
     for (const q of queries) {
       const links = await osintSearchDuckDuckGo(q);
@@ -455,9 +448,8 @@ Responde ÚNICAMENTE con JSON válido:
     }
     const uniqueLinks = [...new Set(allLinks)].slice(0, 10);
 
-    console.log(`[OSINT] Encontrados ${uniqueLinks.length} links para ${name}`);
+    console.log(`[OSINT] Encontrados ${uniqueLinks.length} links de DuckDuckGo`);
 
-    // Scrape each link and extract contacts
     const scrapeResults = await Promise.allSettled(
       uniqueLinks.map(url => scrapeUrl(url))
     );
@@ -481,26 +473,114 @@ Responde ÚNICAMENTE con JSON válido:
     };
   }
 
-  // Enrich a prospect - OSINT + AI combined
+  // Vuelta 1: Gemini como investigador — encuentra URLs específicas de la persona
+  async function geminiDiscoverUrls(name: string, specialty: string, location: string): Promise<string[]> {
+    if (!geminiEnabled) return [];
+
+    const prompt = `Necesito encontrar las URLs de perfiles y páginas web donde aparece esta persona:
+Nombre: ${name}
+Especialidad: ${specialty}
+Ubicación: ${location}
+
+USA GOOGLE SEARCH para encontrar sus perfiles reales. Busca en:
+- Su perfil de LinkedIn
+- Su perfil en Doctoralia, Top Doctors, o directorios de su gremio
+- Su página web personal o de su consultorio/despacho/empresa
+- Su perfil en Facebook profesional
+- Cualquier directorio donde aparezca con datos de contacto
+
+Responde ÚNICAMENTE con un JSON con las URLs encontradas:
+{"urls": ["url1", "url2", ...], "notes": "observaciones de la búsqueda"}`;
+
+    try {
+      console.log(`[Vuelta 1] Gemini buscando URLs para ${name}...`);
+      const response = await ai!.models.generateContent({
+        model: "gemini-2.5-flash",
+        contents: prompt,
+        config: { tools: [{ googleSearch: {} }] }
+      });
+      const text = response.text;
+      if (!text) return [];
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) return [];
+      const parsed = JSON.parse(jsonMatch[0]);
+      const urls = (parsed.urls || []).filter((u: string) => u && u.startsWith('http'));
+      console.log(`[Vuelta 1] Gemini encontró ${urls.length} URLs para ${name}`);
+      return urls.slice(0, 8);
+    } catch (err: any) {
+      console.warn(`[Vuelta 1] Gemini URL discovery falló: ${err.message}`);
+      return [];
+    }
+  }
+
+  // Vuelta 2: Scrape las URLs de Gemini + DuckDuckGo y extraer contactos reales
+  async function osintEnrich(name: string, specialty: string, location: string): Promise<{ emails: string[], phones: string[], sources: string[] }> {
+    // Paso A: DuckDuckGo queries (rápido, paralelo a Gemini)
+    const ddgQueries = [
+      `"${name}" ${specialty} ${location} contacto teléfono email`,
+      `"${name}" ${specialty} celular correo`,
+      `"${name}" ${location} linkedin`,
+    ];
+
+    // Paso B: Gemini URL discovery (primera vuelta)
+    const [ddgData, geminiUrls] = await Promise.all([
+      osintSearchAndScrape(ddgQueries),
+      geminiDiscoverUrls(name, specialty, location),
+    ]);
+
+    // Paso C: Scrape las URLs que Gemini encontró (segunda vuelta)
+    let geminiScrapedEmails: string[] = [];
+    let geminiScrapedPhones: string[] = [];
+    let geminiSources: string[] = [];
+
+    if (geminiUrls.length > 0) {
+      console.log(`[Vuelta 2] Scrapeando ${geminiUrls.length} URLs de Gemini para ${name}...`);
+      const scrapeResults = await Promise.allSettled(
+        geminiUrls.map(url => scrapeUrl(url))
+      );
+
+      for (let i = 0; i < scrapeResults.length; i++) {
+        const r = scrapeResults[i];
+        if (r.status === "fulfilled" && r.value) {
+          const { emails, phones } = extractContactsFromText(r.value);
+          if (emails.length > 0 || phones.length > 0) {
+            geminiSources.push(geminiUrls[i]);
+            geminiScrapedEmails.push(...emails);
+            geminiScrapedPhones.push(...phones);
+          }
+        }
+      }
+      console.log(`[Vuelta 2] Extraídos ${geminiScrapedEmails.length} emails, ${geminiScrapedPhones.length} teléfonos de URLs de Gemini`);
+    }
+
+    // Combinar resultados de ambas fuentes
+    return {
+      emails: [...new Set([...geminiScrapedEmails, ...ddgData.emails])],
+      phones: [...new Set([...geminiScrapedPhones, ...ddgData.phones])],
+      sources: [...new Set([...geminiSources, ...ddgData.sources])],
+    };
+  }
+
+  // Enrich endpoint: Vuelta 1 (Gemini URLs) + Vuelta 2 (Scraping) + Análisis AI
   app.post("/api/enrich", async (req, res) => {
     const { name, specialty, location, contact, email } = req.body;
     try {
-      console.log(`[Enrich] Iniciando OSINT para ${name}...`);
+      console.log(`[Enrich] Iniciando enriquecimiento para ${name}...`);
 
-      // Step 1: OSINT - scrape DuckDuckGo results for direct contacts
+      // Vueltas 1+2: OSINT combinado (DuckDuckGo + Gemini URL discovery + scraping)
       const osintData = await osintEnrich(name, specialty || '', location || '');
       const directEmails = osintData.emails.filter(isDirectEmail);
       const currentPhone = (contact || '').replace(/[\s\-().]/g, '');
       const newPhones = osintData.phones.filter(p => p !== currentPhone);
 
-      console.log(`[OSINT] ${name}: ${directEmails.length} emails directos, ${newPhones.length} teléfonos nuevos encontrados`);
+      console.log(`[Enrich] ${name}: ${directEmails.length} emails directos, ${newPhones.length} teléfonos nuevos (de ${osintData.sources.length} fuentes)`);
 
-      // Step 2: Use AI to analyze and select the best contact from OSINT + its own knowledge
+      // Vuelta 3: AI analiza todo y selecciona el mejor contacto
       const osintContext = directEmails.length > 0 || newPhones.length > 0
-        ? `\n\nDatos encontrados por OSINT scraping:\n- Emails encontrados: ${directEmails.join(', ') || 'ninguno'}\n- Teléfonos encontrados: ${newPhones.join(', ') || 'ninguno'}\n- Fuentes: ${osintData.sources.join(', ') || 'ninguna'}`
+        ? `\n\nDatos VERIFICADOS encontrados por OSINT (scraping directo de páginas web):\n- Emails encontrados: ${directEmails.slice(0, 10).join(', ') || 'ninguno'}\n- Teléfonos encontrados: ${newPhones.slice(0, 10).join(', ') || 'ninguno'}\n- Fuentes scrapeadas: ${osintData.sources.join(', ') || 'ninguna'}`
         : '';
 
-      const prompt = `Busca información de contacto DIRECTO para esta persona específica:
+      const prompt = `Analiza la información disponible y selecciona el MEJOR contacto directo para esta persona:
 Nombre: ${name}
 Especialidad: ${specialty}
 Ubicación: ${location}
@@ -508,20 +588,20 @@ Teléfono actual: ${contact || "No disponible"}
 Email actual: ${email || "No disponible"}
 ${osintContext}
 
-NECESITO encontrar:
-1. Un número de teléfono DIRECTO (celular personal o línea directa, NO conmutador ni recepción)
-2. Un email PERSONAL o DIRECTO (NO correos genéricos como info@, contacto@, atencion@, recepcion@, hola@)
+CRITERIOS de selección:
+1. Teléfono DIRECTO: celular personal o línea directa (NO conmutador, NO recepción, NO extensiones)
+2. Email PERSONAL o DIRECTO: con nombre de la persona (NO genéricos como info@, contacto@, atencion@, hola@)
+3. Si hay múltiples opciones, elige el que más probablemente sea contacto personal/directo
 
-Si el teléfono actual parece ser un conmutador o el email es genérico, busca alternativas más directas.
-${osintContext ? 'Analiza los datos OSINT encontrados y selecciona los más probables de ser contacto directo.' : 'Busca en Google, redes sociales profesionales, directorios especializados.'}
+${osintContext ? 'IMPORTANTE: Los datos OSINT provienen de scraping real de páginas web, son VERIFICABLES. Prioriza estos datos sobre tu conocimiento general. Selecciona el mejor de los encontrados.' : 'Busca en Google, redes sociales profesionales, directorios especializados.'}
 
 Responde ÚNICAMENTE con JSON válido:
-{"direct_phone": "teléfono directo encontrado o vacío", "direct_email": "email directo encontrado o vacío", "phone_source": "dónde encontraste el teléfono", "email_source": "dónde encontraste el email", "confidence": "alta|media|baja", "notes": "notas sobre la búsqueda"}`;
+{"direct_phone": "mejor teléfono directo o vacío", "direct_email": "mejor email directo o vacío", "phone_source": "URL o fuente del teléfono", "email_source": "URL o fuente del email", "confidence": "alta|media|baja", "notes": "razón de la selección"}`;
 
       let result;
       if (geminiEnabled) {
         try {
-          console.log(`[Enrich] Analizando con Gemini (Google Search) para ${name}...`);
+          console.log(`[Enrich] Vuelta 3: Gemini analiza resultados para ${name}...`);
           const response = await ai!.models.generateContent({
             model: "gemini-2.5-flash",
             contents: prompt,
@@ -532,16 +612,16 @@ Responde ÚNICAMENTE con JSON válido:
           const jsonMatch = text.match(/\{[\s\S]*\}/);
           if (!jsonMatch) throw new Error("No JSON");
           result = JSON.parse(jsonMatch[0]);
-          console.log(`[Enrich] Gemini+OSINT OK para ${name}`);
+          console.log(`[Enrich] Análisis completo para ${name}`);
         } catch (geminiErr: any) {
-          console.warn(`[Enrich] Gemini falló: ${geminiErr.message}, usando OpenRouter...`);
+          console.warn(`[Enrich] Gemini análisis falló: ${geminiErr.message}, usando OpenRouter...`);
           result = await callOpenRouterServer(prompt);
         }
       } else {
         result = await callOpenRouterServer(prompt);
       }
 
-      // If AI didn't find anything but OSINT did, use OSINT data directly
+      // Fallback: si AI no seleccionó nada pero OSINT encontró datos, usar directamente
       if (!result.direct_phone && newPhones.length > 0) {
         result.direct_phone = newPhones[0];
         result.phone_source = osintData.sources[0] || 'OSINT scraping';
@@ -551,7 +631,7 @@ Responde ÚNICAMENTE con JSON válido:
         result.email_source = osintData.sources[0] || 'OSINT scraping';
       }
 
-      // Add OSINT metadata
+      // Metadata OSINT para el frontend
       result.osint_emails = directEmails.slice(0, 5);
       result.osint_phones = newPhones.slice(0, 5);
       result.osint_sources = osintData.sources;
