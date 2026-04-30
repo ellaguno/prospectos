@@ -621,7 +621,24 @@ Responde ÚNICAMENTE con JSON válido:
         result = await callOpenRouterServer(prompt);
       }
 
-      // Fallback: si AI no seleccionó nada pero OSINT encontró datos, usar directamente
+      // Validar: si la AI devolvió un email genérico, descartarlo
+      if (result.direct_email && !isDirectEmail(result.direct_email)) {
+        console.log(`[Enrich] Email genérico descartado: ${result.direct_email}`);
+        result.direct_email = '';
+        result.email_source = '';
+      }
+
+      // Validar: teléfonos con indicadores genéricos
+      if (result.direct_phone) {
+        const ph = result.direct_phone.toLowerCase();
+        if (ph.includes('ext') || ph.includes('conmutador') || ph.includes('0000') || ph.includes('no disponible')) {
+          console.log(`[Enrich] Teléfono genérico descartado: ${result.direct_phone}`);
+          result.direct_phone = '';
+          result.phone_source = '';
+        }
+      }
+
+      // Fallback: si AI no seleccionó nada válido pero OSINT encontró datos, usar directamente
       if (!result.direct_phone && newPhones.length > 0) {
         result.direct_phone = newPhones[0];
         result.phone_source = osintData.sources[0] || 'OSINT scraping';

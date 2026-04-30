@@ -149,16 +149,17 @@ export default function App() {
     try {
       const newContact = directPhone || prospect.contact;
       const newEmail = directEmail || prospect.email;
+      const newQuality = detectContactQuality(newContact, newEmail);
       await fetch(`/api/prospects/${prospect.id}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: 'direct' }),
+        body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: newQuality }),
       });
       // Refresh
       const response = await fetch('/api/prospects');
       const data = await response.json();
       setProspects(data);
-      setSelectedProspect({ ...prospect, contact: newContact, email: newEmail, contactQuality: 'direct' });
+      setSelectedProspect({ ...prospect, contact: newContact, email: newEmail, contactQuality: newQuality });
       setEnrichResult(null);
     } catch (error) {
       console.error("Apply enrichment failed", error);
