@@ -96,11 +96,11 @@ export default function App() {
   });
   const [sources, setSources] = useState<string[]>(() => {
     const saved = localStorage.getItem('prospectos_sources');
-    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla', 'Google Maps'];
+    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla', 'Google Maps', 'Facebook', 'Instagram', 'LinkedIn'];
   });
   const [selectedSources, setSelectedSources] = useState<string[]>(() => {
     const saved = localStorage.getItem('prospectos_selected_sources');
-    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla'];
+    return saved ? JSON.parse(saved) : ['Doctoralia', 'Sección Amarilla', 'Google Maps', 'Facebook', 'Instagram', 'LinkedIn'];
   });
   const [newSource, setNewSource] = useState('');
 
