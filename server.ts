@@ -5,8 +5,91 @@ import dotenv from "dotenv";
 import Database from "better-sqlite3";
 import cors from "cors";
 import * as cheerio from "cheerio";
+import { GoogleGenAI, Type } from "@google/genai";
 
 dotenv.config({ override: true });
+
+// --- Gemini Setup ---
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || "";
+const geminiEnabled = GEMINI_API_KEY.length > 0;
+const ai = geminiEnabled ? new GoogleGenAI({ apiKey: GEMINI_API_KEY }) : null;
+
+const LEAD_SCHEMA = {
+  type: Type.OBJECT,
+  required: ["leads"],
+  properties: {
+    leads: {
+      type: Type.ARRAY,
+      items: {
+        type: Type.OBJECT,
+        required: ["name", "specialty", "location", "contact", "email", "category", "source"],
+        properties: {
+          name: { type: Type.STRING },
+          specialty: { type: Type.STRING },
+          location: { type: Type.STRING },
+          contact: { type: Type.STRING },
+          email: { type: Type.STRING },
+          category: { type: Type.STRING },
+          source: { type: Type.STRING },
+        }
+      }
+    }
+  }
+};
+
+async function discoverWithGemini(categories: string[], location: string, customSource?: string): Promise<any> {
+  if (!ai) throw new Error("Gemini not configured");
+
+  const prompt = `Actúa como un experto en prospección de clientes en México.
+  USA GOOGLE SEARCH para buscar y generar una lista de 20 prospectos REALES de alto perfil en ${location}.
+  Tipos de perfil solicitado: ${categories.join(', ')}.
+  ${customSource ? `PRIORIZA buscar en estas fuentes: ${customSource}.` : "Busca en Google, LinkedIn, directorios profesionales y sitios especializados regionales (Sección Amarilla, Doctoralia, etc.)."}
+  Para cada prospecto necesito: Nombre completo, Especialidad o Cargo/Empresa, Ubicación aproximada (Ciudad/Colonia/Edificio), Teléfono REAL (incluyendo lada de la ciudad), Correo Electrónico público (si está disponible), y la URL o Fuente de donde obtuviste la información.
+
+  IMPORTANTE: Usa la herramienta de búsqueda para encontrar datos REALES y VERIFICABLES. No inventes teléfonos ni datos.
+  Asegúrate de que sean profesionales que operen actualmente en ${location}.
+
+  Responde ÚNICAMENTE con JSON válido (sin markdown ni bloques de código):
+  {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: prompt,
+    config: {
+      tools: [{ googleSearch: {} }],
+    }
+  });
+
+  const text = response.text;
+  if (!text) throw new Error("No response from Gemini");
+  const jsonMatch = text.match(/\{[\s\S]*\}/);
+  if (!jsonMatch) throw new Error("No valid JSON in Gemini response");
+  return JSON.parse(jsonMatch[0]);
+}
+
+async function extractWithGemini(textContent: string): Promise<any> {
+  if (!ai) throw new Error("Gemini not configured");
+
+  const prompt = `Extrae información de prospectos del siguiente texto pegado de un sitio web.
+
+  Texto: """${textContent}"""
+
+  Detecta nombres, especialidades, clínicas, teléfonos, correos electrónicos y ubicaciones.
+  Clasifica cada lead en una de estas categorías: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.`;
+
+  const response = await ai.models.generateContent({
+    model: "gemini-2.5-flash",
+    contents: prompt,
+    config: {
+      responseMimeType: "application/json",
+      responseSchema: LEAD_SCHEMA,
+    }
+  });
+
+  const text = response.text;
+  if (!text) throw new Error("No response from Gemini");
+  return JSON.parse(text);
+}
 
 // SQLite Setup using better-sqlite3
 const db = new Database("prospectos.db");
@@ -171,38 +254,33 @@ async function startServer() {
     return JSON.parse(jsonMatch[0]);
   }
 
-  app.post("/api/discover", async (req, res) => {
-    const { categories, location, customSource } = req.body;
-    const loc = location || "Ciudad de México";
-    try {
-      let scrapedTexts: string[] = [];
+  // Fallback: scraping + OpenRouter
+  async function discoverWithScraping(categories: string[], loc: string, customSource?: string) {
+    let scrapedTexts: string[] = [];
 
-      // Parse sources from customSource (comma-separated from frontend)
-      const sourcesFromClient = customSource
-        ? customSource.split(",").map((s: string) => s.trim()).filter(Boolean)
-        : ["Doctoralia", "Sección Amarilla"];
+    const sourcesFromClient = customSource
+      ? customSource.split(",").map((s: string) => s.trim()).filter(Boolean)
+      : ["Doctoralia", "Sección Amarilla"];
 
-      // Build URLs from categories + location + sources
-      const urls = buildScrapeUrls(categories || [], loc, sourcesFromClient);
+    const urls = buildScrapeUrls(categories, loc, sourcesFromClient);
 
-      // Scrape in parallel (max 6 concurrent)
-      const batchSize = 6;
-      for (let i = 0; i < urls.length; i += batchSize) {
-        const batch = urls.slice(i, i + batchSize);
-        const results = await Promise.allSettled(batch.map(u => scrapeUrl(u)));
-        for (let j = 0; j < results.length; j++) {
-          const r = results[j];
-          if (r.status === "fulfilled" && r.value) {
-            scrapedTexts.push(`[Fuente: ${batch[j]}]\n${r.value}`);
-          }
+    const batchSize = 6;
+    for (let i = 0; i < urls.length; i += batchSize) {
+      const batch = urls.slice(i, i + batchSize);
+      const results = await Promise.allSettled(batch.map(u => scrapeUrl(u)));
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j];
+        if (r.status === "fulfilled" && r.value) {
+          scrapedTexts.push(`[Fuente: ${batch[j]}]\n${r.value}`);
         }
       }
+    }
 
-      const combinedText = scrapedTexts.join("\n\n---\n\n").slice(0, 15000);
+    const combinedText = scrapedTexts.join("\n\n---\n\n").slice(0, 15000);
 
-      const prompt = combinedText
-        ? `A partir del siguiente contenido scrapeado de directorios profesionales, extrae una lista de hasta 20 prospectos reales en ${loc}.
-Tipos de perfil buscado: ${(categories || []).join(", ")}.
+    const prompt = combinedText
+      ? `A partir del siguiente contenido scrapeado de directorios profesionales, extrae una lista de hasta 20 prospectos reales en ${loc}.
+Tipos de perfil buscado: ${categories.join(", ")}.
 
 CONTENIDO SCRAPEADO:
 """${combinedText}"""
@@ -211,14 +289,36 @@ Para cada prospecto necesito: Nombre completo, Especialidad o Cargo/Empresa, Ubi
 
 Responde ÚNICAMENTE con JSON válido:
 {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`
-        : `Genera una lista de 20 prospectos de alto perfil en ${loc}.
-Tipos de perfil: ${(categories || []).join(", ")}.
+      : `Genera una lista de 20 prospectos de alto perfil en ${loc}.
+Tipos de perfil: ${categories.join(", ")}.
 Para cada uno: Nombre completo, Especialidad, Ubicación, Teléfono, Email, Categoría (Salud|Legal|Inversión|Arquitectura|Profesionales|Otros), Fuente.
 
 Responde ÚNICAMENTE con JSON válido:
 {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`;
 
-      const result = await callOpenRouterServer(prompt);
+    return callOpenRouterServer(prompt);
+  }
+
+  app.post("/api/discover", async (req, res) => {
+    const { categories, location, customSource } = req.body;
+    const loc = location || "Ciudad de México";
+    try {
+      // Try Gemini first (has Google Search for best results)
+      if (geminiEnabled) {
+        try {
+          console.log(`[Discover] Intentando Gemini (Google Search) para ${loc}...`);
+          const result = await discoverWithGemini(categories || [], loc, customSource);
+          console.log(`[Discover] Gemini OK - ${result.leads?.length || 0} leads`);
+          return res.json(result);
+        } catch (geminiErr: any) {
+          console.warn(`[Discover] Gemini falló: ${geminiErr.message}. Usando fallback (scraping + OpenRouter)...`);
+        }
+      }
+
+      // Fallback: scraping + OpenRouter
+      console.log(`[Discover] Usando scraping + OpenRouter para ${loc}...`);
+      const result = await discoverWithScraping(categories || [], loc, customSource);
+      console.log(`[Discover] Scraping+OpenRouter OK - ${result.leads?.length || 0} leads`);
       res.json(result);
     } catch (err: any) {
       console.error("Discovery error:", err.message);
@@ -229,6 +329,19 @@ Responde ÚNICAMENTE con JSON válido:
   app.post("/api/extract", async (req, res) => {
     const { text } = req.body;
     try {
+      // Try Gemini first
+      if (geminiEnabled) {
+        try {
+          console.log(`[Extract] Intentando Gemini...`);
+          const result = await extractWithGemini(text);
+          console.log(`[Extract] Gemini OK - ${result.leads?.length || 0} leads`);
+          return res.json(result);
+        } catch (geminiErr: any) {
+          console.warn(`[Extract] Gemini falló: ${geminiErr.message}. Usando fallback (OpenRouter)...`);
+        }
+      }
+
+      // Fallback: OpenRouter
       const prompt = `Extrae información de prospectos del siguiente texto pegado de un sitio web.
 
 Texto: """${text}"""
