@@ -10,20 +10,24 @@
 
 import React, { useState, useMemo, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { 
-  Users, 
-  Stethoscope, 
-  Scale, 
-  HardHat, 
-  Download, 
-  Plus, 
-  Search, 
-  MapPin, 
-  Phone, 
+import {
+  Users,
+  Stethoscope,
+  Scale,
+  HardHat,
+  Download,
+  Plus,
+  Search,
+  MapPin,
+  Phone,
   ExternalLink,
   ChevronRight,
   TrendingUp,
-  Briefcase
+  Briefcase,
+  AlertTriangle,
+  CheckCircle,
+  RefreshCw,
+  X
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
@@ -37,7 +41,28 @@ interface Prospect {
   email?: string;
   category: 'Salud' | 'Legal' | 'Inversión' | 'Arquitectura' | 'Profesionales' | 'Otros';
   source: string;
+  contactQuality?: 'direct' | 'generic' | 'pending';
   createdAt?: any;
+}
+
+// Detect if contact info is generic (switchboard/generic email)
+function detectContactQuality(contact: string, email: string): 'direct' | 'generic' | 'pending' {
+  if (!contact && !email) return 'pending';
+
+  const genericEmailPrefixes = ['info@', 'contacto@', 'atencion@', 'recepcion@', 'hola@', 'admin@', 'contact@', 'ventas@', 'general@', 'oficina@'];
+  const isGenericEmail = email ? genericEmailPrefixes.some(p => email.toLowerCase().startsWith(p)) : false;
+
+  // Generic phone indicators: extensions, "conmutador", very round numbers, no direct line
+  const isGenericPhone = contact ? (
+    contact.toLowerCase().includes('ext') ||
+    contact.toLowerCase().includes('conmutador') ||
+    contact.includes('0000') ||
+    contact.toLowerCase().includes('no disponible')
+  ) : false;
+
+  if (isGenericEmail || isGenericPhone) return 'generic';
+  if (contact || email) return 'direct';
+  return 'pending';
 }
 
 const INITIAL_PROSPECTS: Prospect[] = [];
@@ -80,6 +105,55 @@ export default function App() {
   useEffect(() => { localStorage.setItem('prospectos_cities', JSON.stringify(cities)); }, [cities]);
   useEffect(() => { localStorage.setItem('prospectos_sources', JSON.stringify(sources)); }, [sources]);
   useEffect(() => { localStorage.setItem('prospectos_selected_sources', JSON.stringify(selectedSources)); }, [selectedSources]);
+
+  // Detail modal state
+  const [selectedProspect, setSelectedProspect] = useState<Prospect | null>(null);
+  const [isEnriching, setIsEnriching] = useState(false);
+  const [enrichResult, setEnrichResult] = useState<any>(null);
+
+  const handleEnrich = async (prospect: Prospect) => {
+    setIsEnriching(true);
+    setEnrichResult(null);
+    try {
+      const response = await fetch('/api/enrich', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: prospect.name,
+          specialty: prospect.specialty,
+          location: prospect.location,
+          contact: prospect.contact,
+          email: prospect.email,
+        }),
+      });
+      const data = await response.json();
+      setEnrichResult(data);
+    } catch (error) {
+      console.error("Enrich failed", error);
+    } finally {
+      setIsEnriching(false);
+    }
+  };
+
+  const applyEnrichment = async (prospect: Prospect, directPhone: string, directEmail: string) => {
+    try {
+      const newContact = directPhone || prospect.contact;
+      const newEmail = directEmail || prospect.email;
+      await fetch(`/api/prospects/${prospect.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: 'direct' }),
+      });
+      // Refresh
+      const response = await fetch('/api/prospects');
+      const data = await response.json();
+      setProspects(data);
+      setSelectedProspect({ ...prospect, contact: newContact, email: newEmail, contactQuality: 'direct' });
+      setEnrichResult(null);
+    } catch (error) {
+      console.error("Apply enrichment failed", error);
+    }
+  };
 
   // Sync with SQLite API
   useEffect(() => {
@@ -479,14 +553,26 @@ export default function App() {
                         </div>
                       </td>
                       <td className="px-6 py-4">
-                        <div className="flex flex-col gap-0.5">
-                          <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
-                          <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
-                        </div>
+                        {(() => {
+                          const quality = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
+                          return (
+                            <div className="flex flex-col gap-0.5">
+                              <div className="flex items-center gap-1.5">
+                                <p className="text-xs font-medium text-slate-900">{prospect.contact || '-'}</p>
+                                {quality === 'generic' && <AlertTriangle size={12} className="text-amber-400" title="Contacto genérico" />}
+                                {quality === 'direct' && <CheckCircle size={12} className="text-emerald-500" title="Contacto directo" />}
+                              </div>
+                              <p className="text-[10px] text-slate-400">{prospect.email || ''}</p>
+                            </div>
+                          );
+                        })()}
                       </td>
                       <td className="px-6 py-4 text-right">
-                        <button className="p-1 px-2 text-[10px] font-bold text-slate-300 group-hover:text-slate-900 transition-colors">
-                          VIEW
+                        <button
+                          onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
+                          className="p-1 px-2 text-[10px] font-bold text-slate-300 group-hover:text-slate-900 transition-colors"
+                        >
+                          VER
                         </button>
                       </td>
                     </motion.tr>
@@ -828,6 +914,162 @@ export default function App() {
                   </button>
                 </div>
               </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Prospect Detail Modal */}
+      <AnimatePresence>
+        {selectedProspect && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setSelectedProspect(null)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-lg bg-white border border-slate-900 shadow-2xl p-10 max-h-[85vh] overflow-y-auto"
+            >
+              <button
+                onClick={() => setSelectedProspect(null)}
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-900"
+              >
+                <X size={18} />
+              </button>
+
+              <h2 className="text-xl font-medium text-slate-900 mb-1">{selectedProspect.name}</h2>
+              <p className="text-xs text-slate-500 mb-6">{selectedProspect.specialty}</p>
+
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Categoría</span>
+                    <span className="text-sm text-slate-900">{selectedProspect.category}</span>
+                  </div>
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Ubicación</span>
+                    <span className="text-sm text-slate-900">{selectedProspect.location}</span>
+                  </div>
+                </div>
+
+                <div className="border-t border-slate-100 pt-4">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Contacto</span>
+                  {(() => {
+                    const quality = selectedProspect.contactQuality || detectContactQuality(selectedProspect.contact, selectedProspect.email || '');
+                    return (
+                      <div className={`p-3 rounded border ${
+                        quality === 'generic' ? 'border-amber-200 bg-amber-50' :
+                        quality === 'direct' ? 'border-emerald-200 bg-emerald-50' :
+                        'border-slate-200 bg-slate-50'
+                      }`}>
+                        <div className="flex items-center gap-2 mb-1">
+                          {quality === 'generic' && <AlertTriangle size={14} className="text-amber-500" />}
+                          {quality === 'direct' && <CheckCircle size={14} className="text-emerald-500" />}
+                          <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
+                            {quality === 'generic' ? 'Contacto genérico (conmutador/email general)' :
+                             quality === 'direct' ? 'Contacto directo verificado' :
+                             'Sin contacto'}
+                          </span>
+                        </div>
+                        <div className="flex items-center gap-2 mt-2">
+                          <Phone size={12} className="text-slate-400" />
+                          <span className="text-sm text-slate-900">{selectedProspect.contact || 'No disponible'}</span>
+                        </div>
+                        {selectedProspect.email && (
+                          <div className="flex items-center gap-2 mt-1">
+                            <ExternalLink size={12} className="text-slate-400" />
+                            <span className="text-sm text-slate-900">{selectedProspect.email}</span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+                </div>
+
+                <div className="border-t border-slate-100 pt-4">
+                  <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Fuente</span>
+                  <p className="text-xs text-slate-600 break-all">{selectedProspect.source}</p>
+                </div>
+
+                {/* Enrich Section */}
+                <div className="border-t border-slate-100 pt-4">
+                  <button
+                    disabled={isEnriching}
+                    onClick={() => handleEnrich(selectedProspect)}
+                    className="btn-secondary w-full flex items-center justify-center gap-2 text-xs"
+                  >
+                    {isEnriching ? (
+                      <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> Buscando contacto directo...</>
+                    ) : (
+                      <><RefreshCw size={14} /> Buscar contacto directo</>
+                    )}
+                  </button>
+
+                  {enrichResult && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: 'auto' }}
+                      className="mt-4 p-4 bg-slate-50 border border-slate-200 rounded space-y-3"
+                    >
+                      <h4 className="text-[10px] font-bold text-slate-500 uppercase tracking-widest">Resultado de búsqueda</h4>
+
+                      {enrichResult.direct_phone && (
+                        <div>
+                          <span className="text-[10px] text-slate-400 block">Teléfono directo:</span>
+                          <span className="text-sm font-medium text-slate-900">{enrichResult.direct_phone}</span>
+                          {enrichResult.phone_source && (
+                            <span className="text-[10px] text-slate-400 block">Fuente: {enrichResult.phone_source}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {enrichResult.direct_email && (
+                        <div>
+                          <span className="text-[10px] text-slate-400 block">Email directo:</span>
+                          <span className="text-sm font-medium text-slate-900">{enrichResult.direct_email}</span>
+                          {enrichResult.email_source && (
+                            <span className="text-[10px] text-slate-400 block">Fuente: {enrichResult.email_source}</span>
+                          )}
+                        </div>
+                      )}
+
+                      {enrichResult.confidence && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-slate-400">Confianza:</span>
+                          <span className={`text-[10px] font-bold uppercase ${
+                            enrichResult.confidence === 'alta' ? 'text-emerald-600' :
+                            enrichResult.confidence === 'media' ? 'text-amber-600' :
+                            'text-red-500'
+                          }`}>{enrichResult.confidence}</span>
+                        </div>
+                      )}
+
+                      {enrichResult.notes && (
+                        <p className="text-[10px] text-slate-500">{enrichResult.notes}</p>
+                      )}
+
+                      {(enrichResult.direct_phone || enrichResult.direct_email) && (
+                        <button
+                          onClick={() => applyEnrichment(selectedProspect, enrichResult.direct_phone, enrichResult.direct_email)}
+                          className="btn-primary w-full text-xs mt-2"
+                        >
+                          Aplicar contacto directo
+                        </button>
+                      )}
+
+                      {!enrichResult.direct_phone && !enrichResult.direct_email && (
+                        <p className="text-xs text-slate-500 italic">No se encontró un contacto más directo.</p>
+                      )}
+                    </motion.div>
+                  )}
+                </div>
+              </div>
             </motion.div>
           </div>
         )}

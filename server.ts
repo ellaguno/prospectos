@@ -102,8 +102,11 @@ db.exec(`CREATE TABLE IF NOT EXISTS prospects (
   email TEXT,
   category TEXT,
   source TEXT,
+  contactQuality TEXT DEFAULT 'pending',
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
+// Migration: add contactQuality column if missing
+try { db.exec(`ALTER TABLE prospects ADD COLUMN contactQuality TEXT DEFAULT 'pending'`); } catch {};
 
 async function startServer() {
   const app = express();
@@ -356,6 +359,76 @@ Responde ÚNICAMENTE con JSON válido:
       res.json(result);
     } catch (err: any) {
       console.error("Extract error:", err.message);
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Update a prospect
+  app.patch("/api/prospects/:id", (req, res) => {
+    const { id } = req.params;
+    const { contact, email, contactQuality } = req.body;
+    try {
+      const updates: string[] = [];
+      const values: any[] = [];
+      if (contact !== undefined) { updates.push("contact = ?"); values.push(contact); }
+      if (email !== undefined) { updates.push("email = ?"); values.push(email); }
+      if (contactQuality !== undefined) { updates.push("contactQuality = ?"); values.push(contactQuality); }
+      if (updates.length === 0) return res.json({ message: "Nothing to update" });
+      values.push(id);
+      db.prepare(`UPDATE prospects SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      res.json({ message: "Actualizado" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Enrich a prospect - search for direct contact info
+  app.post("/api/enrich", async (req, res) => {
+    const { name, specialty, location, contact, email } = req.body;
+    try {
+      const prompt = `Busca información de contacto DIRECTO para esta persona específica:
+Nombre: ${name}
+Especialidad: ${specialty}
+Ubicación: ${location}
+Teléfono actual: ${contact || "No disponible"}
+Email actual: ${email || "No disponible"}
+
+NECESITO encontrar:
+1. Un número de teléfono DIRECTO (celular personal o línea directa, NO conmutador ni recepción)
+2. Un email PERSONAL o DIRECTO (NO correos genéricos como info@, contacto@, atencion@, recepcion@, hola@)
+
+Si el teléfono actual parece ser un conmutador o el email es genérico, busca alternativas más directas.
+Busca en Google, redes sociales profesionales, directorios especializados.
+
+Responde ÚNICAMENTE con JSON válido:
+{"direct_phone": "teléfono directo encontrado o vacío", "direct_email": "email directo encontrado o vacío", "phone_source": "dónde encontraste el teléfono", "email_source": "dónde encontraste el email", "confidence": "alta|media|baja", "notes": "notas sobre la búsqueda"}`;
+
+      let result;
+      if (geminiEnabled) {
+        try {
+          console.log(`[Enrich] Buscando contacto directo para ${name} con Gemini...`);
+          const response = await ai!.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt,
+            config: { tools: [{ googleSearch: {} }] }
+          });
+          const text = response.text;
+          if (!text) throw new Error("No response");
+          const jsonMatch = text.match(/\{[\s\S]*\}/);
+          if (!jsonMatch) throw new Error("No JSON");
+          result = JSON.parse(jsonMatch[0]);
+          console.log(`[Enrich] Gemini OK para ${name}`);
+        } catch (geminiErr: any) {
+          console.warn(`[Enrich] Gemini falló: ${geminiErr.message}, usando OpenRouter...`);
+          result = await callOpenRouterServer(prompt);
+        }
+      } else {
+        result = await callOpenRouterServer(prompt);
+      }
+
+      res.json(result);
+    } catch (err: any) {
+      console.error("Enrich error:", err.message);
       res.status(500).json({ error: err.message });
     }
   });
