@@ -71,10 +71,15 @@ export default function App() {
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
+  const [roles, setRoles] = useState<string[]>(() => {
+    const saved = localStorage.getItem('prospectos_all_roles');
+    return saved ? JSON.parse(saved) : ['Doctores', 'Abogados', 'Notarios', 'Inversionistas', 'Empresarios', 'Ingenieros', 'Arquitectos', 'Candidatos', 'Especialistas'];
+  });
   const [selectedRoles, setSelectedRoles] = useState<string[]>(() => {
     const saved = localStorage.getItem('prospectos_roles');
     return saved ? JSON.parse(saved) : ['Doctores'];
   });
+  const [newRole, setNewRole] = useState('');
   const [discoveryLocation, setDiscoveryLocation] = useState<string>(() => {
     return localStorage.getItem('prospectos_location') || 'Ciudad de México';
   });
@@ -100,6 +105,7 @@ export default function App() {
   const [newSource, setNewSource] = useState('');
 
   // Persist preferences
+  useEffect(() => { localStorage.setItem('prospectos_all_roles', JSON.stringify(roles)); }, [roles]);
   useEffect(() => { localStorage.setItem('prospectos_roles', JSON.stringify(selectedRoles)); }, [selectedRoles]);
   useEffect(() => { localStorage.setItem('prospectos_location', discoveryLocation); }, [discoveryLocation]);
   useEffect(() => { localStorage.setItem('prospectos_cities', JSON.stringify(cities)); }, [cities]);
@@ -682,7 +688,7 @@ export default function App() {
                 <div>
                   <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Segmento de Mercado</label>
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-                    {['Doctores', 'Abogados', 'Notarios', 'Inversionistas', 'Empresarios', 'Ingenieros', 'Arquitectos', 'Candidatos', 'Especialistas'].map(role => {
+                    {roles.map(role => {
                       const isSelected = selectedRoles.includes(role);
                       return (
                         <button
@@ -706,6 +712,41 @@ export default function App() {
                         </button>
                       );
                     })}
+                  </div>
+                  <div className="flex items-center gap-2 mt-3">
+                    <input
+                      type="text"
+                      className="flex-1 px-0 py-1 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-xs"
+                      placeholder="Agregar segmento (ej. PMOs, Consultores, etc.)..."
+                      value={newRole}
+                      onChange={e => setNewRole(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter' && newRole.trim()) {
+                          if (!roles.includes(newRole.trim())) {
+                            setRoles([...roles, newRole.trim()]);
+                          }
+                          if (!selectedRoles.includes(newRole.trim())) {
+                            setSelectedRoles([...selectedRoles, newRole.trim()]);
+                          }
+                          setNewRole('');
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (newRole.trim()) {
+                          if (!roles.includes(newRole.trim())) {
+                            setRoles([...roles, newRole.trim()]);
+                          }
+                          if (!selectedRoles.includes(newRole.trim())) {
+                            setSelectedRoles([...selectedRoles, newRole.trim()]);
+                          }
+                          setNewRole('');
+                        }
+                      }}
+                      className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase"
+                    >+ Agregar</button>
                   </div>
                 </div>
 
