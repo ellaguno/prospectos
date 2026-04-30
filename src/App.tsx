@@ -51,6 +51,7 @@ function detectContactQuality(contact: string, email: string): 'direct' | 'gener
 
   const genericEmailPrefixes = ['info@', 'contacto@', 'atencion@', 'recepcion@', 'hola@', 'admin@', 'contact@', 'ventas@', 'general@', 'oficina@'];
   const isGenericEmail = email ? genericEmailPrefixes.some(p => email.toLowerCase().startsWith(p)) : false;
+  const hasRealEmail = email && !isGenericEmail;
 
   // Generic phone indicators: extensions, "conmutador", very round numbers, no direct line
   const isGenericPhone = contact ? (
@@ -59,9 +60,12 @@ function detectContactQuality(contact: string, email: string): 'direct' | 'gener
     contact.includes('0000') ||
     contact.toLowerCase().includes('no disponible')
   ) : false;
+  const hasRealPhone = contact && !isGenericPhone;
 
-  if (isGenericEmail || isGenericPhone) return 'generic';
-  if (contact || email) return 'direct';
+  // Green: both real phone AND real email
+  if (hasRealPhone && hasRealEmail) return 'direct';
+  // Yellow: has something but incomplete or generic
+  if (contact || email) return 'generic';
   return 'pending';
 }
 
@@ -238,19 +242,21 @@ export default function App() {
     return filtered;
   }, [prospects, searchTerm, activeCategory, sortBy]);
 
-  const handleReviewAll = async () => {
-    const pending = prospects.filter(p => {
+  const handleReviewAll = async (onlyPending = false) => {
+    const targets = prospects.filter(p => {
       const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
-      return q === 'pending' || !p.contactQuality;
+      return onlyPending ? (q === 'pending' || !p.contactQuality) : (q !== 'direct');
     });
-    if (pending.length === 0) return;
+    if (targets.length === 0) return;
 
     setIsReviewingAll(true);
-    setReviewProgress({ done: 0, total: pending.length });
+    setReviewProgress({ done: 0, total: targets.length });
 
-    for (let i = 0; i < pending.length; i++) {
-      const p = pending[i];
+    for (let i = 0; i < targets.length; i++) {
+      const p = targets[i];
       const quality = detectContactQuality(p.contact, p.email || '');
+
+      // Step 1: Qualify
       try {
         await fetch(`/api/prospects/${p.id}`, {
           method: 'PATCH',
@@ -258,7 +264,36 @@ export default function App() {
           body: JSON.stringify({ contactQuality: quality }),
         });
       } catch {}
-      setReviewProgress({ done: i + 1, total: pending.length });
+
+      // Step 2: OSINT enrich if not green
+      if (quality !== 'direct') {
+        try {
+          const enrichRes = await fetch('/api/enrich', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: p.name,
+              specialty: p.specialty,
+              location: p.location,
+              contact: p.contact,
+              email: p.email,
+            }),
+          });
+          const enrichData = await enrichRes.json();
+          if (enrichData.direct_phone || enrichData.direct_email) {
+            const newContact = enrichData.direct_phone || p.contact;
+            const newEmail = enrichData.direct_email || p.email;
+            const newQuality = detectContactQuality(newContact, newEmail);
+            await fetch(`/api/prospects/${p.id}`, {
+              method: 'PATCH',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: newQuality }),
+            });
+          }
+        } catch {}
+      }
+
+      setReviewProgress({ done: i + 1, total: targets.length });
     }
 
     // Refresh
@@ -320,6 +355,11 @@ export default function App() {
         });
         await saveToApi(mappedLeads);
         setCustomSource('');
+
+        // Auto-qualify and OSINT enrich non-green contacts in background
+        setIsDiscovering(false);
+        setTimeout(() => handleReviewAll(false), 500);
+        return;
       }
     } catch (error) {
       console.error("Discovery failed", error);
@@ -626,13 +666,13 @@ export default function App() {
             </select>
             <button
               disabled={isReviewingAll}
-              onClick={handleReviewAll}
+              onClick={() => handleReviewAll(false)}
               className="btn-secondary text-xs whitespace-nowrap flex items-center gap-2"
             >
               {isReviewingAll ? (
-                <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> {reviewProgress.done}/{reviewProgress.total}</>
+                <><div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> OSINT {reviewProgress.done}/{reviewProgress.total}</>
               ) : (
-                <><CheckCircle size={14} /> Evaluar todos</>
+                <><CheckCircle size={14} /> Calificar + OSINT</>
               )}
             </button>
           </div>
@@ -1230,6 +1270,15 @@ export default function App() {
 
                       {enrichResult.notes && (
                         <p className="text-[10px] text-slate-500">{enrichResult.notes}</p>
+                      )}
+
+                      {enrichResult.osint_sources?.length > 0 && (
+                        <div>
+                          <span className="text-[10px] text-slate-400 block mb-1">Fuentes OSINT ({enrichResult.osint_sources.length}):</span>
+                          {enrichResult.osint_sources.map((src: string, i: number) => (
+                            <a key={i} href={src} target="_blank" rel="noopener noreferrer" className="text-[10px] text-blue-500 hover:underline block truncate">{src}</a>
+                          ))}
+                        </div>
                       )}
 
                       {(enrichResult.direct_phone || enrichResult.direct_email) && (

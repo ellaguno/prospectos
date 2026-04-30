@@ -382,23 +382,138 @@ Responde ÚNICAMENTE con JSON válido:
     }
   });
 
-  // Enrich a prospect - search for direct contact info
+  // --- OSINT Module (theHarvester-style) ---
+  // Search DuckDuckGo HTML for links related to a person
+  async function osintSearchDuckDuckGo(query: string): Promise<string[]> {
+    try {
+      const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(url, {
+        headers: {
+          "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        },
+        signal: controller.signal,
+      });
+      clearTimeout(timeout);
+      if (!res.ok) return [];
+      const html = await res.text();
+      const $ = cheerio.load(html);
+      const links: string[] = [];
+      $("a.result__a").each((_, el) => {
+        const href = $(el).attr("href");
+        if (href && href.startsWith("http")) links.push(href);
+      });
+      // Also extract from result__url spans (DuckDuckGo sometimes uses uddg redirects)
+      $("a.result__snippet").parent().find("a").each((_, el) => {
+        const href = $(el).attr("href");
+        if (href && href.startsWith("http")) links.push(href);
+      });
+      return [...new Set(links)].slice(0, 8);
+    } catch {
+      return [];
+    }
+  }
+
+  // Extract emails and phones from raw text using regex
+  function extractContactsFromText(text: string): { emails: string[], phones: string[] } {
+    const emailRegex = /[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}/g;
+    const phoneRegex = /(?:\+?52\s?)?(?:\(?\d{2,3}\)?[\s\-.]?\d{3,4}[\s\-.]?\d{4})/g;
+    const mxCellRegex = /\b(?:55|33|81|56)\s?\d{4}\s?\d{4}\b/g;
+
+    const emails = [...new Set((text.match(emailRegex) || []))];
+    const phonesRaw = [...(text.match(phoneRegex) || []), ...(text.match(mxCellRegex) || [])];
+    const phones = [...new Set(phonesRaw.map(p => p.replace(/[\s\-().]/g, '')).filter(p => p.length >= 10))];
+
+    return { emails, phones };
+  }
+
+  // Filter out generic emails
+  function isDirectEmail(email: string): boolean {
+    const genericPrefixes = ['info', 'contacto', 'atencion', 'recepcion', 'hola', 'admin', 'ventas', 'soporte', 'noreply', 'no-reply', 'contact', 'hello'];
+    const prefix = email.split('@')[0].toLowerCase();
+    return !genericPrefixes.some(g => prefix === g || prefix.startsWith(g + '.'));
+  }
+
+  // Full OSINT enrichment: search multiple queries, scrape results, extract contacts
+  async function osintEnrich(name: string, specialty: string, location: string): Promise<{ emails: string[], phones: string[], sources: string[] }> {
+    const queries = [
+      `"${name}" ${specialty} ${location} contacto teléfono email`,
+      `"${name}" ${specialty} celular correo`,
+      `"${name}" ${location} linkedin`,
+    ];
+
+    const allEmails: string[] = [];
+    const allPhones: string[] = [];
+    const sources: string[] = [];
+
+    // Search DuckDuckGo for each query
+    const allLinks: string[] = [];
+    for (const q of queries) {
+      const links = await osintSearchDuckDuckGo(q);
+      allLinks.push(...links);
+    }
+    const uniqueLinks = [...new Set(allLinks)].slice(0, 10);
+
+    console.log(`[OSINT] Encontrados ${uniqueLinks.length} links para ${name}`);
+
+    // Scrape each link and extract contacts
+    const scrapeResults = await Promise.allSettled(
+      uniqueLinks.map(url => scrapeUrl(url))
+    );
+
+    for (let i = 0; i < scrapeResults.length; i++) {
+      const r = scrapeResults[i];
+      if (r.status === "fulfilled" && r.value) {
+        const { emails, phones } = extractContactsFromText(r.value);
+        if (emails.length > 0 || phones.length > 0) {
+          sources.push(uniqueLinks[i]);
+          allEmails.push(...emails);
+          allPhones.push(...phones);
+        }
+      }
+    }
+
+    return {
+      emails: [...new Set(allEmails)],
+      phones: [...new Set(allPhones)],
+      sources: [...new Set(sources)],
+    };
+  }
+
+  // Enrich a prospect - OSINT + AI combined
   app.post("/api/enrich", async (req, res) => {
     const { name, specialty, location, contact, email } = req.body;
     try {
+      console.log(`[Enrich] Iniciando OSINT para ${name}...`);
+
+      // Step 1: OSINT - scrape DuckDuckGo results for direct contacts
+      const osintData = await osintEnrich(name, specialty || '', location || '');
+      const directEmails = osintData.emails.filter(isDirectEmail);
+      const currentPhone = (contact || '').replace(/[\s\-().]/g, '');
+      const newPhones = osintData.phones.filter(p => p !== currentPhone);
+
+      console.log(`[OSINT] ${name}: ${directEmails.length} emails directos, ${newPhones.length} teléfonos nuevos encontrados`);
+
+      // Step 2: Use AI to analyze and select the best contact from OSINT + its own knowledge
+      const osintContext = directEmails.length > 0 || newPhones.length > 0
+        ? `\n\nDatos encontrados por OSINT scraping:\n- Emails encontrados: ${directEmails.join(', ') || 'ninguno'}\n- Teléfonos encontrados: ${newPhones.join(', ') || 'ninguno'}\n- Fuentes: ${osintData.sources.join(', ') || 'ninguna'}`
+        : '';
+
       const prompt = `Busca información de contacto DIRECTO para esta persona específica:
 Nombre: ${name}
 Especialidad: ${specialty}
 Ubicación: ${location}
 Teléfono actual: ${contact || "No disponible"}
 Email actual: ${email || "No disponible"}
+${osintContext}
 
 NECESITO encontrar:
 1. Un número de teléfono DIRECTO (celular personal o línea directa, NO conmutador ni recepción)
 2. Un email PERSONAL o DIRECTO (NO correos genéricos como info@, contacto@, atencion@, recepcion@, hola@)
 
 Si el teléfono actual parece ser un conmutador o el email es genérico, busca alternativas más directas.
-Busca en Google, redes sociales profesionales, directorios especializados.
+${osintContext ? 'Analiza los datos OSINT encontrados y selecciona los más probables de ser contacto directo.' : 'Busca en Google, redes sociales profesionales, directorios especializados.'}
 
 Responde ÚNICAMENTE con JSON válido:
 {"direct_phone": "teléfono directo encontrado o vacío", "direct_email": "email directo encontrado o vacío", "phone_source": "dónde encontraste el teléfono", "email_source": "dónde encontraste el email", "confidence": "alta|media|baja", "notes": "notas sobre la búsqueda"}`;
@@ -406,7 +521,7 @@ Responde ÚNICAMENTE con JSON válido:
       let result;
       if (geminiEnabled) {
         try {
-          console.log(`[Enrich] Buscando contacto directo para ${name} con Gemini...`);
+          console.log(`[Enrich] Analizando con Gemini (Google Search) para ${name}...`);
           const response = await ai!.models.generateContent({
             model: "gemini-2.5-flash",
             contents: prompt,
@@ -417,7 +532,7 @@ Responde ÚNICAMENTE con JSON válido:
           const jsonMatch = text.match(/\{[\s\S]*\}/);
           if (!jsonMatch) throw new Error("No JSON");
           result = JSON.parse(jsonMatch[0]);
-          console.log(`[Enrich] Gemini OK para ${name}`);
+          console.log(`[Enrich] Gemini+OSINT OK para ${name}`);
         } catch (geminiErr: any) {
           console.warn(`[Enrich] Gemini falló: ${geminiErr.message}, usando OpenRouter...`);
           result = await callOpenRouterServer(prompt);
@@ -425,6 +540,21 @@ Responde ÚNICAMENTE con JSON válido:
       } else {
         result = await callOpenRouterServer(prompt);
       }
+
+      // If AI didn't find anything but OSINT did, use OSINT data directly
+      if (!result.direct_phone && newPhones.length > 0) {
+        result.direct_phone = newPhones[0];
+        result.phone_source = osintData.sources[0] || 'OSINT scraping';
+      }
+      if (!result.direct_email && directEmails.length > 0) {
+        result.direct_email = directEmails[0];
+        result.email_source = osintData.sources[0] || 'OSINT scraping';
+      }
+
+      // Add OSINT metadata
+      result.osint_emails = directEmails.slice(0, 5);
+      result.osint_phones = newPhones.slice(0, 5);
+      result.osint_sources = osintData.sources;
 
       res.json(result);
     } catch (err: any) {
