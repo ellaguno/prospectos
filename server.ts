@@ -6,6 +6,8 @@ import Database from "better-sqlite3";
 import cors from "cors";
 import * as cheerio from "cheerio";
 import { GoogleGenAI, Type } from "@google/genai";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
 
 dotenv.config({ override: true });
 
@@ -108,12 +110,72 @@ db.exec(`CREATE TABLE IF NOT EXISTS prospects (
 // Migration: add contactQuality column if missing
 try { db.exec(`ALTER TABLE prospects ADD COLUMN contactQuality TEXT DEFAULT 'pending'`); } catch {};
 
+// --- Users table ---
+db.exec(`CREATE TABLE IF NOT EXISTS users (
+  id TEXT PRIMARY KEY,
+  username TEXT UNIQUE NOT NULL,
+  password TEXT NOT NULL,
+  displayName TEXT,
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
+// Seed default admin user if no users exist
+const userCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as any).count;
+if (userCount === 0) {
+  const defaultPassword = bcrypt.hashSync(process.env.ADMIN_PASSWORD || "admin123", 10);
+  db.prepare("INSERT INTO users (id, username, password, displayName) VALUES (?, ?, ?, ?)").run(
+    "admin", process.env.ADMIN_USER || "admin", defaultPassword, "Administrador"
+  );
+  console.log(`[Auth] Usuario admin creado (user: ${process.env.ADMIN_USER || "admin"}, password: ${process.env.ADMIN_PASSWORD || "admin123"})`);
+}
+
+const JWT_SECRET = process.env.JWT_SECRET || "prospectos_secret_key_change_me";
+
 async function startServer() {
   const app = express();
   const PORT = parseInt(process.env.PORT || "3000");
 
   app.use(express.json());
   app.use(cors());
+
+  // --- Auth endpoints (no middleware) ---
+  app.post("/api/auth/login", (req, res) => {
+    const { username, password } = req.body;
+    if (!username || !password) return res.status(400).json({ error: "Usuario y contraseña requeridos" });
+
+    const user = db.prepare("SELECT * FROM users WHERE username = ?").get(username) as any;
+    if (!user || !bcrypt.compareSync(password, user.password)) {
+      return res.status(401).json({ error: "Credenciales inválidas" });
+    }
+
+    const token = jwt.sign({ id: user.id, username: user.username, displayName: user.displayName }, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: { id: user.id, username: user.username, displayName: user.displayName } });
+  });
+
+  app.get("/api/auth/me", (req, res) => {
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ error: "No token" });
+    try {
+      const payload = jwt.verify(authHeader.split(" ")[1], JWT_SECRET) as any;
+      res.json({ user: { id: payload.id, username: payload.username, displayName: payload.displayName } });
+    } catch {
+      res.status(401).json({ error: "Token inválido" });
+    }
+  });
+
+  // --- Auth middleware for all /api routes (except auth) ---
+  app.use("/api", (req, res, next) => {
+    if (req.path.startsWith("/auth/")) return next();
+    const authHeader = req.headers.authorization;
+    if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ error: "No autorizado" });
+    try {
+      const payload = jwt.verify(authHeader.split(" ")[1], JWT_SECRET);
+      (req as any).user = payload;
+      next();
+    } catch {
+      res.status(401).json({ error: "Token inválido o expirado" });
+    }
+  });
 
   // API Routes
   app.get("/api/prospects", (req, res) => {

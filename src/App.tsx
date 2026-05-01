@@ -72,9 +72,120 @@ function detectContactQuality(contact: string, email: string): 'direct' | 'gener
   return 'pending';
 }
 
-const INITIAL_PROSPECTS: Prospect[] = [];
+// Auth helper
+function getToken(): string | null {
+  return localStorage.getItem('prospectos_token');
+}
+
+function authFetch(url: string, options: RequestInit = {}): Promise<Response> {
+  const token = getToken();
+  return fetch(url, {
+    ...options,
+    headers: {
+      ...options.headers,
+      'Content-Type': 'application/json',
+      ...(token ? { 'Authorization': `Bearer ${token}` } : {}),
+    },
+  });
+}
+
+function LoginScreen({ onLogin }: { onLogin: (user: any) => void }) {
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setLoading(true);
+    try {
+      const res = await authFetch('/api/auth/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) { setError(data.error || 'Error de autenticación'); return; }
+      localStorage.setItem('prospectos_token', data.token);
+      onLogin(data.user);
+    } catch {
+      setError('Error de conexión');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
+      <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="w-full max-w-sm bg-white border border-slate-200 shadow-xl p-10"
+      >
+        <div className="flex items-center gap-3 mb-8">
+          <div className="w-10 h-10 bg-slate-900 rounded flex items-center justify-center text-white">
+            <TrendingUp size={20} />
+          </div>
+          <span className="font-semibold text-lg tracking-tight text-slate-900 uppercase">Prospectos</span>
+        </div>
+
+        <form onSubmit={handleSubmit} className="space-y-4">
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Usuario</label>
+            <input
+              type="text"
+              value={username}
+              onChange={e => setUsername(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Contraseña</label>
+            <input
+              type="password"
+              value={password}
+              onChange={e => setPassword(e.target.value)}
+              className="w-full px-4 py-3 border border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+            />
+          </div>
+          {error && <p className="text-xs text-red-500">{error}</p>}
+          <button
+            type="submit"
+            disabled={loading}
+            className="btn-primary w-full text-sm py-3 flex items-center justify-center gap-2"
+          >
+            {loading ? <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> : 'Iniciar Sesión'}
+          </button>
+        </form>
+      </motion.div>
+    </div>
+  );
+}
 
 export default function App() {
+  const [authUser, setAuthUser] = useState<any>(null);
+  const [authChecked, setAuthChecked] = useState(false);
+
+  // Check existing token on mount
+  useEffect(() => {
+    const token = getToken();
+    if (!token) { setAuthChecked(true); return; }
+    fetch('/api/auth/me', { headers: { 'Authorization': `Bearer ${token}` } })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(data => setAuthUser(data.user))
+      .catch(() => localStorage.removeItem('prospectos_token'))
+      .finally(() => setAuthChecked(true));
+  }, []);
+
+  const handleLogout = () => {
+    localStorage.removeItem('prospectos_token');
+    setAuthUser(null);
+  };
+
+  if (!authChecked) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="w-6 h-6 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /></div>;
+  if (!authUser) return <LoginScreen onLogin={setAuthUser} />;
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -130,7 +241,7 @@ export default function App() {
     setIsEnriching(true);
     setEnrichResult(null);
     try {
-      const response = await fetch('/api/enrich', {
+      const response = await authFetch('/api/enrich', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -161,7 +272,7 @@ export default function App() {
         body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: newQuality }),
       });
       // Refresh
-      const response = await fetch('/api/prospects');
+      const response = await authFetch('/api/prospects');
       const data = await response.json();
       setProspects(data);
       setSelectedProspect({ ...prospect, contact: newContact, email: newEmail, contactQuality: newQuality });
@@ -175,7 +286,7 @@ export default function App() {
   useEffect(() => {
     const fetchProspects = async () => {
       try {
-        const response = await fetch('/api/prospects');
+        const response = await authFetch('/api/prospects');
         const data = await response.json();
         setProspects(data);
       } catch (error) {
@@ -188,14 +299,14 @@ export default function App() {
 
   const saveToApi = async (newLeads: Partial<Prospect>[]) => {
     try {
-      const response = await fetch('/api/prospects', {
+      const response = await authFetch('/api/prospects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(newLeads)
       });
       if (response.ok) {
         // Refresh local state
-        const refreshResponse = await fetch('/api/prospects');
+        const refreshResponse = await authFetch('/api/prospects');
         const data = await refreshResponse.json();
         setProspects(data);
       }
@@ -275,7 +386,7 @@ export default function App() {
       // Step 2: OSINT enrich if not green
       if (quality !== 'direct') {
         try {
-          const enrichRes = await fetch('/api/enrich', {
+          const enrichRes = await authFetch('/api/enrich', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -304,7 +415,7 @@ export default function App() {
     }
 
     // Refresh
-    const response = await fetch('/api/prospects');
+    const response = await authFetch('/api/prospects');
     const data = await response.json();
     setProspects(data);
     setIsReviewingAll(false);
@@ -360,12 +471,12 @@ export default function App() {
     if (selectedIds.size === 0) return;
     if (!confirm(`¿Eliminar ${selectedIds.size} prospecto(s)? Esta acción no se puede deshacer.`)) return;
     try {
-      await fetch('/api/prospects', {
+      await authFetch('/api/prospects', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
-      const response = await fetch('/api/prospects');
+      const response = await authFetch('/api/prospects');
       const data = await response.json();
       setProspects(data);
       setSelectedIds(new Set());
@@ -392,7 +503,7 @@ export default function App() {
       } catch {}
       if (quality !== 'direct') {
         try {
-          const enrichRes = await fetch('/api/enrich', {
+          const enrichRes = await authFetch('/api/enrich', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: p.name, specialty: p.specialty, location: p.location, contact: p.contact, email: p.email }),
@@ -413,7 +524,7 @@ export default function App() {
       setReviewProgress({ done: i + 1, total: targets.length });
     }
 
-    const response = await fetch('/api/prospects');
+    const response = await authFetch('/api/prospects');
     const data = await response.json();
     setProspects(data);
     setIsReviewingAll(false);
@@ -466,7 +577,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ...editForm, contactQuality: detectContactQuality(editForm.contact || '', editForm.email || '') }),
       });
-      const response = await fetch('/api/prospects');
+      const response = await authFetch('/api/prospects');
       const data = await response.json();
       setProspects(data);
       const updated = data.find((p: Prospect) => p.id === selectedProspect.id);
@@ -480,12 +591,12 @@ export default function App() {
   const handleDeleteProspect = async (prospect: Prospect) => {
     if (!confirm(`¿Eliminar "${prospect.name}"?`)) return;
     try {
-      await fetch('/api/prospects', {
+      await authFetch('/api/prospects', {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [prospect.id] }),
       });
-      const response = await fetch('/api/prospects');
+      const response = await authFetch('/api/prospects');
       const data = await response.json();
       setProspects(data);
       setSelectedProspect(null);
@@ -758,6 +869,14 @@ export default function App() {
               </div>
             </div>
           )}
+          <button
+            onClick={handleLogout}
+            className="w-full flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-red-500 transition-colors text-xs"
+            title="Cerrar sesión"
+          >
+            <X size={14} />
+            {!sidebarCollapsed && <span>{authUser?.displayName || 'Salir'}</span>}
+          </button>
         </div>
       </nav>
 
@@ -1035,11 +1154,10 @@ export default function App() {
                           <button
                             onClick={() => {
                               const q = detectContactQuality(prospect.contact, prospect.email || '');
-                              fetch(`/api/prospects/${prospect.id}`, {
+                              authFetch(`/api/prospects/${prospect.id}`, {
                                 method: 'PATCH',
-                                headers: { 'Content-Type': 'application/json' },
                                 body: JSON.stringify({ contactQuality: q }),
-                              }).then(() => fetch('/api/prospects').then(r => r.json()).then(setProspects));
+                              }).then(() => authFetch('/api/prospects').then(r => r.json()).then(setProspects));
                             }}
                             title="Calificar"
                             className="p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded transition-colors"
