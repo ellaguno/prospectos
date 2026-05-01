@@ -32,7 +32,12 @@ import {
   MessageCircle,
   Globe,
   Settings,
-  UserPlus
+  UserPlus,
+  ThumbsUp,
+  ThumbsDown,
+  Play,
+  Square,
+  StickyNote
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
@@ -46,12 +51,14 @@ interface Prospect {
   email?: string;
   category: 'Salud' | 'Legal' | 'Inversión' | 'Arquitectura' | 'Profesionales' | 'Otros';
   source: string;
-  contactQuality?: 'direct' | 'generic' | 'pending';
+  contactQuality?: 'direct' | 'generic' | 'pending' | 'qualified' | 'disqualified';
+  notes?: string;
+  url?: string;
   createdAt?: any;
 }
 
 // Detect if contact info is generic (switchboard/generic email)
-function detectContactQuality(contact: string, email: string): 'direct' | 'generic' | 'pending' {
+function detectContactQuality(contact: string, email: string): 'direct' | 'generic' | 'pending' | 'qualified' | 'disqualified' {
   if (!contact && !email) return 'pending';
 
   const genericEmailPrefixes = ['info@', 'contacto@', 'atencion@', 'recepcion@', 'hola@', 'admin@', 'contact@', 'ventas@', 'general@', 'oficina@'];
@@ -236,6 +243,7 @@ export default function App() {
   const [enrichResult, setEnrichResult] = useState<any>(null);
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Prospect>>({});
+  const [isContinuousRunning, setIsContinuousRunning] = useState(false);
 
   const handleEnrich = async (prospect: Prospect) => {
     setIsEnriching(true);
@@ -297,7 +305,28 @@ export default function App() {
     };
 
     fetchProspects();
+
+    // Check continuous status
+    authFetch('/api/continuous/status').then(r => r.json()).then(d => setIsContinuousRunning(d.active)).catch(() => {});
   }, [authUser]);
+
+  // Auto-refresh prospects while continuous discovery is running
+  useEffect(() => {
+    if (!isContinuousRunning || !authUser) return;
+    const interval = setInterval(async () => {
+      try {
+        const response = await authFetch('/api/prospects');
+        if (response.ok) {
+          const data = await response.json();
+          if (Array.isArray(data)) setProspects(data);
+        }
+        const statusRes = await authFetch('/api/continuous/status');
+        const statusData = await statusRes.json();
+        if (!statusData.active) setIsContinuousRunning(false);
+      } catch {}
+    }, 15000);
+    return () => clearInterval(interval);
+  }, [isContinuousRunning, authUser]);
 
   const saveToApi = async (newLeads: Partial<Prospect>[]) => {
     try {
@@ -325,7 +354,8 @@ export default function App() {
     contact: '',
     email: '',
     category: 'Salud',
-    source: ''
+    source: '',
+    notes: ''
   });
 
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
@@ -389,7 +419,7 @@ export default function App() {
     });
 
     // Sort
-    const qualityOrder = { direct: 0, generic: 1, pending: 2 };
+    const qualityOrder: Record<string, number> = { qualified: 0, direct: 1, generic: 2, pending: 3, disqualified: 4 };
     if (sortBy === 'quality') {
       filtered.sort((a, b) => {
         const qa = qualityOrder[a.contactQuality || detectContactQuality(a.contact, a.email || '')] ?? 2;
@@ -407,6 +437,7 @@ export default function App() {
   const handleReviewAll = async (onlyPending = false) => {
     const targets = prospects.filter(p => {
       const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
+      if (q === 'qualified' || q === 'disqualified') return false; // Skip manually set
       return onlyPending ? (q === 'pending' || !p.contactQuality) : (q !== 'direct');
     });
     if (targets.length === 0) return;
@@ -609,17 +640,50 @@ export default function App() {
   };
 
   const startEditing = (prospect: Prospect) => {
-    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source });
+    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source, notes: prospect.notes || '', url: prospect.url || '' });
     setIsEditing(true);
+  };
+
+  const handleManualQualify = async (prospect: Prospect, status: 'qualified' | 'disqualified') => {
+    try {
+      await authFetch(`/api/prospects/${prospect.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ contactQuality: status }),
+      });
+      const response = await authFetch('/api/prospects');
+      const data = await response.json();
+      setProspects(data);
+      const updated = data.find((p: Prospect) => p.id === prospect.id);
+      if (updated) setSelectedProspect(updated);
+    } catch (error) {
+      console.error("Qualify failed", error);
+    }
+  };
+
+  const handleContinuousDiscovery = async () => {
+    if (isContinuousRunning) {
+      await authFetch('/api/continuous/stop', { method: 'POST' });
+      setIsContinuousRunning(false);
+    } else {
+      const allSources = customSource ? [...selectedSources, customSource] : selectedSources;
+      await authFetch('/api/continuous/start', {
+        method: 'POST',
+        body: JSON.stringify({ categories: selectedRoles, location: discoveryLocation, sources: allSources }),
+      });
+      setIsContinuousRunning(true);
+      setShowAdvancedDiscovery(false);
+    }
   };
 
   const handleSaveEdit = async () => {
     if (!selectedProspect) return;
     try {
-      await fetch(`/api/prospects/${selectedProspect.id}`, {
+      // Preserve manual qualification status
+      const currentQ = selectedProspect.contactQuality;
+      const newQ = (currentQ === 'qualified' || currentQ === 'disqualified') ? currentQ : detectContactQuality(editForm.contact || '', editForm.email || '');
+      await authFetch(`/api/prospects/${selectedProspect.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...editForm, contactQuality: detectContactQuality(editForm.contact || '', editForm.email || '') }),
+        body: JSON.stringify({ ...editForm, contactQuality: newQ }),
       });
       const response = await authFetch('/api/prospects');
       const data = await response.json();
@@ -756,7 +820,7 @@ export default function App() {
         p.contact,
         p.email || '',
         p.category,
-        q === 'direct' ? '● Directo' : q === 'generic' ? '◐ Genérico' : '○ Pendiente',
+        q === 'qualified' ? '★ Calificado' : q === 'direct' ? '● Directo' : q === 'generic' ? '◐ Genérico' : q === 'disqualified' ? '✗ Descalificado' : '○ Pendiente',
         p.source,
       ]);
     }
@@ -796,7 +860,7 @@ export default function App() {
         const q = (qCell.v as string) || '';
         qCell.s = {
           ...cellBorder,
-          font: { color: { rgb: q.includes('Directo') ? '16A34A' : q.includes('Genérico') ? 'D97706' : '94A3B8' }, bold: true, sz: 10 },
+          font: { color: { rgb: q.includes('Calificado') ? '2563EB' : q.includes('Directo') ? '16A34A' : q.includes('Genérico') ? 'D97706' : q.includes('Descalificado') ? 'DC2626' : '94A3B8' }, bold: true, sz: 10 },
         };
       }
       rowIdx++;
@@ -849,10 +913,11 @@ export default function App() {
       contact: newProspect.contact,
       email: newProspect.email,
       category: newProspect.category as any,
-      source: newProspect.source || 'Manual'
+      source: newProspect.source || 'Manual',
+      notes: newProspect.notes
     }]);
 
-    setNewProspect({ name: '', specialty: '', location: '', contact: '', email: '', category: 'Salud', source: '' });
+    setNewProspect({ name: '', specialty: '', location: '', contact: '', email: '', category: 'Salud', source: '', notes: '' });
     setIsAdding(false);
   };
 
@@ -951,6 +1016,19 @@ export default function App() {
             <span className="text-xs font-medium">Buscando prospectos...</span>
           </motion.div>
         )}
+        {isContinuousRunning && !isDiscovering && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            className="fixed top-4 right-4 z-50 bg-blue-600 text-white px-4 py-2 rounded-lg shadow-lg flex items-center gap-3 cursor-pointer"
+            onClick={handleContinuousDiscovery}
+          >
+            <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
+            <span className="text-xs font-medium">Descubrimiento continuo activo</span>
+            <Square size={12} />
+          </motion.div>
+        )}
       </AnimatePresence>
 
       <main className={`p-6 md:p-10 transition-all duration-300 ${sidebarCollapsed ? 'sm:ml-16' : 'sm:ml-64'}`}>
@@ -978,7 +1056,14 @@ export default function App() {
               {isDiscovering ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <TrendingUp size={14} />}
               Descubrimiento AI
             </button>
-            <button 
+            <button
+              onClick={handleContinuousDiscovery}
+              className={`flex items-center gap-2 text-xs ${isContinuousRunning ? 'btn-primary bg-red-600 hover:bg-red-700 border-red-600' : 'btn-secondary'}`}
+              title={isContinuousRunning ? 'Detener descubrimiento continuo' : 'Iniciar descubrimiento continuo'}
+            >
+              {isContinuousRunning ? <><Square size={14} /> Detener continuo</> : <><Play size={14} /> Continuo</>}
+            </button>
+            <button
               onClick={() => setShowClipboard(!showClipboard)}
               className="btn-secondary flex items-center gap-2 text-xs"
             >
@@ -1163,12 +1248,16 @@ export default function App() {
                           const q = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
                           return (
                             <div className={`w-3 h-3 rounded-full mx-auto ${
+                              q === 'qualified' ? 'bg-blue-500' :
                               q === 'direct' ? 'bg-emerald-400' :
                               q === 'generic' ? 'bg-amber-400' :
+                              q === 'disqualified' ? 'bg-red-400' :
                               'bg-slate-300'
                             }`} title={
+                              q === 'qualified' ? 'Calificado manualmente' :
                               q === 'direct' ? 'Contacto directo' :
                               q === 'generic' ? 'Contacto genérico' :
+                              q === 'disqualified' ? 'Descalificado' :
                               'Sin evaluar'
                             } />
                           );
@@ -1176,7 +1265,10 @@ export default function App() {
                       </td>
                       <td className="px-4 py-4">
                         <div>
-                          <p className="font-medium text-sm text-slate-900">{prospect.name}</p>
+                          <div className="flex items-center gap-1.5">
+                            <p className="font-medium text-sm text-slate-900">{prospect.name}</p>
+                            {prospect.notes && <StickyNote size={10} className="text-amber-400 shrink-0" title={prospect.notes} />}
+                          </div>
                           <div className="flex items-center gap-1.5 mt-1">
                             <div className={`w-1.5 h-1.5 rounded-full ${
                               prospect.category === 'Salud' ? 'bg-rose-400' :
@@ -1513,20 +1605,33 @@ export default function App() {
               </div>
 
               <div className="mt-12 flex items-center justify-between">
-                <button 
+                <button
                   onClick={() => setShowAdvancedDiscovery(false)}
                   className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
                 >
                   Cerrar panel
                 </button>
-                <button 
-                  disabled={isDiscovering || selectedRoles.length === 0}
-                  onClick={handleDiscovery}
-                  className="btn-primary text-xs flex items-center gap-3"
-                >
-                  {isDiscovering ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Search size={14} />}
-                  {isDiscovering ? "Iniciando Agent Search..." : "Iniciar Prospección AI"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    disabled={selectedRoles.length === 0}
+                    onClick={handleContinuousDiscovery}
+                    className={`text-xs flex items-center gap-2 px-4 py-2 rounded transition-colors ${
+                      isContinuousRunning
+                        ? 'bg-red-600 text-white hover:bg-red-700'
+                        : 'btn-secondary'
+                    }`}
+                  >
+                    {isContinuousRunning ? <><Square size={14} /> Detener</> : <><Play size={14} /> Continuo</>}
+                  </button>
+                  <button
+                    disabled={isDiscovering || selectedRoles.length === 0}
+                    onClick={handleDiscovery}
+                    className="btn-primary text-xs flex items-center gap-3"
+                  >
+                    {isDiscovering ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Search size={14} />}
+                    {isDiscovering ? "Iniciando Agent Search..." : "Iniciar Prospección AI"}
+                  </button>
+                </div>
               </div>
             </motion.div>
           </div>
@@ -1616,24 +1721,35 @@ export default function App() {
 
                   <div>
                     <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Especialidad / Organización</label>
-                    <input 
+                    <input
                       className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
                       value={newProspect.specialty}
                       onChange={e => setNewProspect({...newProspect, specialty: e.target.value})}
                       placeholder="Cargo o institución médica/legal"
                     />
                   </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Notas</label>
+                    <textarea
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm resize-none"
+                      rows={2}
+                      value={newProspect.notes}
+                      onChange={e => setNewProspect({...newProspect, notes: e.target.value})}
+                      placeholder="Observaciones, contexto, etc."
+                    />
+                  </div>
                 </div>
 
                 <div className="mt-12 flex items-center justify-between">
-                  <button 
+                  <button
                     type="button"
                     onClick={() => setIsAdding(false)}
                     className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
                   >
                     Descartar
                   </button>
-                  <button 
+                  <button
                     type="submit"
                     className="btn-primary text-xs"
                   >
@@ -1707,9 +1823,31 @@ export default function App() {
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Fuente</label>
                     <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.source || ''} onChange={e => setEditForm({...editForm, source: e.target.value})} />
                   </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">URL</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.url || ''} onChange={e => setEditForm({...editForm, url: e.target.value})} placeholder="https://..." />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</label>
+                    <textarea className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 resize-none" rows={3} value={editForm.notes || ''} onChange={e => setEditForm({...editForm, notes: e.target.value})} placeholder="Observaciones..." />
+                  </div>
                   <div className="flex gap-2 pt-4 border-t border-slate-100">
                     <button onClick={handleSaveEdit} className="btn-primary flex-1 text-xs">Guardar</button>
                     <button onClick={() => setIsEditing(false)} className="btn-secondary flex-1 text-xs">Cancelar</button>
+                  </div>
+                  <div className="flex gap-2 pt-2">
+                    <button
+                      onClick={() => { handleManualQualify(selectedProspect!, 'qualified'); setIsEditing(false); }}
+                      className="flex-1 flex items-center justify-center gap-2 text-xs px-3 py-2 border border-blue-200 text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                    >
+                      <ThumbsUp size={14} /> Calificar
+                    </button>
+                    <button
+                      onClick={() => { handleManualQualify(selectedProspect!, 'disqualified'); setIsEditing(false); }}
+                      className="flex-1 flex items-center justify-center gap-2 text-xs px-3 py-2 border border-red-200 text-red-500 hover:bg-red-50 rounded transition-colors"
+                    >
+                      <ThumbsDown size={14} /> Descalificar
+                    </button>
                   </div>
                 </div>
               ) : (
@@ -1736,15 +1874,21 @@ export default function App() {
                     const quality = selectedProspect.contactQuality || detectContactQuality(selectedProspect.contact, selectedProspect.email || '');
                     return (
                       <div className={`p-3 rounded border ${
+                        quality === 'qualified' ? 'border-blue-200 bg-blue-50' :
+                        quality === 'disqualified' ? 'border-red-200 bg-red-50' :
                         quality === 'generic' ? 'border-amber-200 bg-amber-50' :
                         quality === 'direct' ? 'border-emerald-200 bg-emerald-50' :
                         'border-slate-200 bg-slate-50'
                       }`}>
                         <div className="flex items-center gap-2 mb-1">
+                          {quality === 'qualified' && <ThumbsUp size={14} className="text-blue-500" />}
+                          {quality === 'disqualified' && <ThumbsDown size={14} className="text-red-500" />}
                           {quality === 'generic' && <AlertTriangle size={14} className="text-amber-500" />}
                           {quality === 'direct' && <CheckCircle size={14} className="text-emerald-500" />}
                           <span className="text-[10px] font-bold uppercase tracking-widest text-slate-500">
-                            {quality === 'generic' ? 'Contacto genérico (conmutador/email general)' :
+                            {quality === 'qualified' ? 'Calificado manualmente' :
+                             quality === 'disqualified' ? 'Descalificado' :
+                             quality === 'generic' ? 'Contacto genérico (conmutador/email general)' :
                              quality === 'direct' ? 'Contacto directo verificado' :
                              'Sin contacto'}
                           </span>
@@ -1768,6 +1912,20 @@ export default function App() {
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Fuente</span>
                   <p className="text-xs text-slate-600 break-all">{selectedProspect.source}</p>
                 </div>
+
+                {selectedProspect.url && (
+                  <div className="border-t border-slate-100 pt-4">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">URL</span>
+                    <a href={selectedProspect.url} target="_blank" rel="noopener noreferrer" className="text-xs text-blue-500 hover:underline break-all">{selectedProspect.url}</a>
+                  </div>
+                )}
+
+                {selectedProspect.notes && (
+                  <div className="border-t border-slate-100 pt-4">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</span>
+                    <p className="text-xs text-slate-600 whitespace-pre-wrap">{selectedProspect.notes}</p>
+                  </div>
+                )}
 
                 {/* Actions */}
                 <div className="border-t border-slate-100 pt-4 flex gap-2">

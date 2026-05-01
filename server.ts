@@ -105,12 +105,17 @@ db.exec(`CREATE TABLE IF NOT EXISTS prospects (
   category TEXT,
   source TEXT,
   contactQuality TEXT DEFAULT 'pending',
+  notes TEXT DEFAULT '',
+  url TEXT DEFAULT '',
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
 // Migration: add contactQuality column if missing
 try { db.exec(`ALTER TABLE prospects ADD COLUMN contactQuality TEXT DEFAULT 'pending'`); } catch {};
 // Migration: add userId column
 try { db.exec(`ALTER TABLE prospects ADD COLUMN userId TEXT DEFAULT 'admin'`); } catch {};
+// Migration: add notes and url columns
+try { db.exec(`ALTER TABLE prospects ADD COLUMN notes TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN url TEXT DEFAULT ''`); } catch {};
 
 // --- Users table ---
 db.exec(`CREATE TABLE IF NOT EXISTS users (
@@ -247,6 +252,28 @@ async function startServer() {
     }
   });
 
+  // Extract URL from source or email domain (exclude generic email services)
+  function extractUrlFromSource(source?: string, email?: string): string {
+    const genericDomains = ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'live.com', 'msn.com', 'icloud.com', 'aol.com', 'protonmail.com', 'mail.com', 'zoho.com', 'yandex.com', 'gmx.com', 'tutanota.com'];
+    // Try to extract from source first
+    if (source) {
+      const urlMatch = source.match(/https?:\/\/[^\s,]+/);
+      if (urlMatch) return urlMatch[0];
+      const domainMatch = source.match(/(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z]{2,}/);
+      if (domainMatch && !genericDomains.includes(domainMatch[0].toLowerCase())) {
+        return `https://${domainMatch[0]}`;
+      }
+    }
+    // Fallback: extract domain from email
+    if (email) {
+      const domain = email.split('@')[1]?.toLowerCase();
+      if (domain && !genericDomains.includes(domain)) {
+        return `https://${domain}`;
+      }
+    }
+    return '';
+  }
+
   // API Routes
   app.get("/api/prospects", (req, res) => {
     const userId = (req as any).user.id;
@@ -261,12 +288,13 @@ async function startServer() {
   app.post("/api/prospects", (req, res) => {
     const userId = (req as any).user.id;
     const prospects = Array.isArray(req.body) ? req.body : [req.body];
-    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
     const transaction = db.transaction((leads) => {
       for (const p of leads) {
         const id = Math.random().toString(36).substr(2, 9);
-        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, userId);
+        const url = p.url || extractUrlFromSource(p.source, p.email);
+        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, p.notes || '', url, userId);
       }
     });
 
@@ -501,7 +529,7 @@ Responde ÚNICAMENTE con JSON válido:
   app.patch("/api/prospects/:id", (req, res) => {
     const { id } = req.params;
     const userId = (req as any).user.id;
-    const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality'];
+    const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality', 'notes', 'url'];
     try {
       const updates: string[] = [];
       const values: any[] = [];
@@ -812,6 +840,111 @@ Responde ÚNICAMENTE con JSON válido:
       console.error("Enrich error:", err.message);
       res.status(500).json({ error: err.message });
     }
+  });
+
+  // --- Continuous Discovery SSE ---
+  const continuousJobs = new Map<string, { active: boolean }>();
+
+  app.get("/api/continuous/status", (req, res) => {
+    const userId = (req as any).user.id;
+    const job = continuousJobs.get(userId);
+    res.json({ active: job?.active || false });
+  });
+
+  app.post("/api/continuous/start", (req, res) => {
+    const userId = (req as any).user.id;
+    const { categories, location, sources } = req.body;
+    if (continuousJobs.get(userId)?.active) {
+      return res.json({ message: "Ya hay un proceso continuo activo" });
+    }
+    continuousJobs.set(userId, { active: true });
+    res.json({ message: "Proceso continuo iniciado" });
+
+    // Run in background
+    (async () => {
+      const job = continuousJobs.get(userId)!;
+      let round = 0;
+      while (job.active) {
+        round++;
+        console.log(`[Continuo] Ronda ${round} para ${userId}...`);
+        try {
+          // Step 1: Discover
+          let result;
+          const customSource = (sources || []).join(', ');
+          if (geminiEnabled) {
+            try {
+              result = await discoverWithGemini(categories || [], location || 'Ciudad de México', customSource);
+            } catch {
+              result = await discoverWithScraping(categories || [], location || 'Ciudad de México', customSource);
+            }
+          } else {
+            result = await discoverWithScraping(categories || [], location || 'Ciudad de México', customSource);
+          }
+
+          if (result?.leads?.length > 0) {
+            // Deduplicate against existing
+            const existing = db.prepare("SELECT name FROM prospects WHERE userId = ?").all(userId) as any[];
+            const existingNames = new Set(existing.map((r: any) => r.name.toLowerCase().trim()));
+            const newLeads = result.leads.filter((l: any) => !existingNames.has(l.name.toLowerCase().trim()));
+
+            if (newLeads.length > 0) {
+              const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+              const tx = db.transaction((leads: any[]) => {
+                for (const p of leads) {
+                  const id = Math.random().toString(36).substr(2, 9);
+                  const url = extractUrlFromSource(p.source, p.email);
+                  insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, '', url, userId);
+                }
+              });
+              tx(newLeads);
+              console.log(`[Continuo] Ronda ${round}: ${newLeads.length} nuevos prospectos guardados`);
+            }
+
+            // Step 2: Qualify + OSINT for pending prospects
+            const pending = db.prepare("SELECT * FROM prospects WHERE userId = ? AND (contactQuality = 'pending' OR contactQuality IS NULL) LIMIT 5").all(userId) as any[];
+            for (const p of pending) {
+              if (!job.active) break;
+              try {
+                const osintData = await osintEnrich(p.name, p.specialty || '', p.location || '');
+                const directEmails = osintData.emails.filter(isDirectEmail);
+                const currentPhone = (p.contact || '').replace(/[\s\-().]/g, '');
+                const newPhones = osintData.phones.filter((ph: string) => ph !== currentPhone);
+                const newContact = newPhones[0] || p.contact;
+                const newEmail = directEmails[0] || p.email;
+                const url = p.url || extractUrlFromSource(p.source, newEmail);
+
+                // Determine quality
+                let quality = 'pending';
+                if (newContact && newEmail && !['info@','contacto@','atencion@','recepcion@','hola@','admin@'].some(g => (newEmail||'').toLowerCase().startsWith(g))) {
+                  quality = 'direct';
+                } else if (newContact || newEmail) {
+                  quality = 'generic';
+                }
+
+                db.prepare("UPDATE prospects SET contact = ?, email = ?, contactQuality = ?, url = ? WHERE id = ? AND userId = ?")
+                  .run(newContact, newEmail, quality, url, p.id, userId);
+              } catch (err: any) {
+                console.warn(`[Continuo] OSINT falló para ${p.name}: ${err.message}`);
+              }
+            }
+          }
+        } catch (err: any) {
+          console.error(`[Continuo] Error en ronda ${round}: ${err.message}`);
+        }
+
+        if (!job.active) break;
+        // Wait 60 seconds between rounds
+        await new Promise(resolve => setTimeout(resolve, 60000));
+      }
+      console.log(`[Continuo] Proceso terminado para ${userId} tras ${round} rondas`);
+    })();
+  });
+
+  app.post("/api/continuous/stop", (req, res) => {
+    const userId = (req as any).user.id;
+    const job = continuousJobs.get(userId);
+    if (job) job.active = false;
+    res.json({ message: "Proceso continuo detenido" });
   });
 
   // Vite middleware for development
