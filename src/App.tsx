@@ -284,18 +284,20 @@ export default function App() {
 
   // Sync with SQLite API
   useEffect(() => {
+    if (!authUser) return;
     const fetchProspects = async () => {
       try {
         const response = await authFetch('/api/prospects');
+        if (!response.ok) return;
         const data = await response.json();
-        setProspects(data);
+        if (Array.isArray(data)) setProspects(data);
       } catch (error) {
         console.error("Fetch failed", error);
       }
     };
 
     fetchProspects();
-  }, []);
+  }, [authUser]);
 
   const saveToApi = async (newLeads: Partial<Prospect>[]) => {
     try {
