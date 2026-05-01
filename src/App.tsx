@@ -30,7 +30,9 @@ import {
   Contact,
   Trash2,
   MessageCircle,
-  Globe
+  Globe,
+  Settings,
+  UserPlus
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
@@ -333,6 +335,48 @@ export default function App() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isReviewingAll, setIsReviewingAll] = useState(false);
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
+
+  // User management state
+  const [showUserAdmin, setShowUserAdmin] = useState(false);
+  const [userList, setUserList] = useState<any[]>([]);
+  const [editingUser, setEditingUser] = useState<any>(null);
+  const [userForm, setUserForm] = useState({ username: '', password: '', displayName: '', role: 'user' });
+  const [userError, setUserError] = useState('');
+
+  const isAdmin = authUser?.role === 'admin';
+
+  const fetchUsers = async () => {
+    try {
+      const res = await authFetch('/api/users');
+      if (res.ok) setUserList(await res.json());
+    } catch {}
+  };
+
+  const handleSaveUser = async () => {
+    setUserError('');
+    if (!userForm.username) { setUserError('Usuario requerido'); return; }
+    if (!editingUser && !userForm.password) { setUserError('Contraseña requerida'); return; }
+    try {
+      const url = editingUser ? `/api/users/${editingUser.id}` : '/api/users';
+      const method = editingUser ? 'PATCH' : 'POST';
+      const body: any = { username: userForm.username, displayName: userForm.displayName, role: userForm.role };
+      if (userForm.password) body.password = userForm.password;
+      const res = await authFetch(url, { method, body: JSON.stringify(body) });
+      const data = await res.json();
+      if (!res.ok) { setUserError(data.error); return; }
+      setEditingUser(null);
+      setUserForm({ username: '', password: '', displayName: '', role: 'user' });
+      fetchUsers();
+    } catch { setUserError('Error de conexión'); }
+  };
+
+  const handleDeleteUser = async (id: string) => {
+    if (!confirm('¿Eliminar este usuario?')) return;
+    try {
+      await authFetch(`/api/users/${id}`, { method: 'DELETE' });
+      fetchUsers();
+    } catch {}
+  };
 
   const filteredProspects = useMemo(() => {
     const filtered = prospects.filter(p => {
@@ -870,6 +914,16 @@ export default function App() {
               </div>
             </div>
           )}
+          {isAdmin && (
+            <button
+              onClick={() => { setShowUserAdmin(true); fetchUsers(); }}
+              className="w-full flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-slate-900 transition-colors text-xs"
+              title="Administrar usuarios"
+            >
+              <Settings size={14} />
+              {!sidebarCollapsed && <span>Usuarios</span>}
+            </button>
+          )}
           <button
             onClick={handleLogout}
             className="w-full flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-red-500 transition-colors text-xs"
@@ -900,8 +954,6 @@ export default function App() {
         <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
           <div>
             <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
-              <span>{discoveryLocation}</span>
-              <span className="w-1 h-1 bg-slate-300 rounded-full"></span>
               <span>CRM</span>
             </div>
             <h1 className="text-4xl font-light text-slate-900 tracking-tight">Prospectos</h1>
@@ -1816,6 +1868,149 @@ export default function App() {
               </div>
                 </>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* User Admin Modal */}
+      <AnimatePresence>
+        {showUserAdmin && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { setShowUserAdmin(false); setEditingUser(null); setUserError(''); }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-2xl bg-white border border-slate-900 shadow-2xl p-8 max-h-[85vh] overflow-y-auto"
+            >
+              <button
+                onClick={() => { setShowUserAdmin(false); setEditingUser(null); setUserError(''); }}
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-900"
+              >
+                <X size={18} />
+              </button>
+
+              <h2 className="text-lg font-medium text-slate-900 mb-6 flex items-center gap-2">
+                <Settings size={20} /> Administrar Usuarios
+              </h2>
+
+              {/* User Form */}
+              <div className="bg-slate-50 border border-slate-200 rounded p-4 mb-6 space-y-3">
+                <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                  {editingUser ? `Editando: ${editingUser.username}` : 'Nuevo usuario'}
+                </h3>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Usuario</label>
+                    <input
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                      value={userForm.username}
+                      onChange={e => setUserForm({...userForm, username: e.target.value})}
+                      placeholder="nombre.usuario"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                      Contraseña {editingUser && '(dejar vacío para no cambiar)'}
+                    </label>
+                    <input
+                      type="password"
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                      value={userForm.password}
+                      onChange={e => setUserForm({...userForm, password: e.target.value})}
+                      placeholder={editingUser ? '••••••' : 'contraseña'}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Nombre</label>
+                    <input
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                      value={userForm.displayName}
+                      onChange={e => setUserForm({...userForm, displayName: e.target.value})}
+                      placeholder="Nombre completo"
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Rol</label>
+                    <select
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                      value={userForm.role}
+                      onChange={e => setUserForm({...userForm, role: e.target.value})}
+                    >
+                      <option value="user">Usuario</option>
+                      <option value="admin">Administrador</option>
+                    </select>
+                  </div>
+                </div>
+                {userError && <p className="text-xs text-red-500">{userError}</p>}
+                <div className="flex gap-2">
+                  <button onClick={handleSaveUser} className="btn-primary text-xs flex items-center gap-2">
+                    <UserPlus size={14} /> {editingUser ? 'Guardar cambios' : 'Crear usuario'}
+                  </button>
+                  {editingUser && (
+                    <button
+                      onClick={() => { setEditingUser(null); setUserForm({ username: '', password: '', displayName: '', role: 'user' }); setUserError(''); }}
+                      className="btn-secondary text-xs"
+                    >
+                      Cancelar
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* User List */}
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Usuario</th>
+                    <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Nombre</th>
+                    <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Rol</th>
+                    <th className="px-4 py-3 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {userList.map(u => (
+                    <tr key={u.id} className="hover:bg-slate-50">
+                      <td className="px-4 py-3 text-sm text-slate-900 font-medium">{u.username}</td>
+                      <td className="px-4 py-3 text-sm text-slate-600">{u.displayName}</td>
+                      <td className="px-4 py-3">
+                        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded ${
+                          u.role === 'admin' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-500'
+                        }`}>
+                          {u.role === 'admin' ? 'Admin' : 'Usuario'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => { setEditingUser(u); setUserForm({ username: u.username, password: '', displayName: u.displayName, role: u.role }); setUserError(''); }}
+                            className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors"
+                            title="Editar"
+                          >
+                            <ExternalLink size={14} />
+                          </button>
+                          {u.id !== 'admin' && (
+                            <button
+                              onClick={() => handleDeleteUser(u.id)}
+                              className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                              title="Eliminar"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          )}
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </motion.div>
           </div>
         )}

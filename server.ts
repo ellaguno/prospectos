@@ -116,15 +116,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS users (
   username TEXT UNIQUE NOT NULL,
   password TEXT NOT NULL,
   displayName TEXT,
+  role TEXT DEFAULT 'user',
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
+// Migration: add role column if missing
+try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`); } catch {};
+// Ensure admin has admin role
+try { db.prepare("UPDATE users SET role = 'admin' WHERE id = 'admin'").run(); } catch {};
 
 // Seed default admin user if no users exist
 const userCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as any).count;
 if (userCount === 0) {
   const defaultPassword = bcrypt.hashSync(process.env.ADMIN_PASSWORD || "admin123", 10);
-  db.prepare("INSERT INTO users (id, username, password, displayName) VALUES (?, ?, ?, ?)").run(
-    "admin", process.env.ADMIN_USER || "admin", defaultPassword, "Administrador"
+  db.prepare("INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)").run(
+    "admin", process.env.ADMIN_USER || "admin", defaultPassword, "Administrador", "admin"
   );
   console.log(`[Auth] Usuario admin creado (user: ${process.env.ADMIN_USER || "admin"}, password: ${process.env.ADMIN_PASSWORD || "admin123"})`);
 }
@@ -148,8 +153,8 @@ async function startServer() {
       return res.status(401).json({ error: "Credenciales inválidas" });
     }
 
-    const token = jwt.sign({ id: user.id, username: user.username, displayName: user.displayName }, JWT_SECRET, { expiresIn: "7d" });
-    res.json({ token, user: { id: user.id, username: user.username, displayName: user.displayName } });
+    const token = jwt.sign({ id: user.id, username: user.username, displayName: user.displayName, role: user.role || 'user' }, JWT_SECRET, { expiresIn: "7d" });
+    res.json({ token, user: { id: user.id, username: user.username, displayName: user.displayName, role: user.role || 'user' } });
   });
 
   app.get("/api/auth/me", (req, res) => {
@@ -157,7 +162,7 @@ async function startServer() {
     if (!authHeader?.startsWith("Bearer ")) return res.status(401).json({ error: "No token" });
     try {
       const payload = jwt.verify(authHeader.split(" ")[1], JWT_SECRET) as any;
-      res.json({ user: { id: payload.id, username: payload.username, displayName: payload.displayName } });
+      res.json({ user: { id: payload.id, username: payload.username, displayName: payload.displayName, role: payload.role || 'user' } });
     } catch {
       res.status(401).json({ error: "Token inválido" });
     }
@@ -174,6 +179,69 @@ async function startServer() {
       next();
     } catch {
       res.status(401).json({ error: "Token inválido o expirado" });
+    }
+  });
+
+  // --- Admin middleware helper ---
+  function requireAdmin(req: any, res: any, next: any) {
+    if (req.user?.role !== 'admin') return res.status(403).json({ error: "Solo administradores" });
+    next();
+  }
+
+  // --- User management (admin only) ---
+  app.get("/api/users", requireAdmin, (req, res) => {
+    try {
+      const rows = db.prepare("SELECT id, username, displayName, role, createdAt FROM users ORDER BY createdAt").all();
+      res.json(rows);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/users", requireAdmin, (req, res) => {
+    const { username, password, displayName, role } = req.body;
+    if (!username || !password) return res.status(400).json({ error: "Usuario y contraseña requeridos" });
+    try {
+      const id = Math.random().toString(36).substr(2, 9);
+      const hashed = bcrypt.hashSync(password, 10);
+      db.prepare("INSERT INTO users (id, username, password, displayName, role) VALUES (?, ?, ?, ?, ?)").run(
+        id, username, hashed, displayName || username, role || 'user'
+      );
+      res.json({ id, username, displayName: displayName || username, role: role || 'user' });
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE')) return res.status(400).json({ error: "El usuario ya existe" });
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.patch("/api/users/:id", requireAdmin, (req, res) => {
+    const { id } = req.params;
+    const { username, password, displayName, role } = req.body;
+    try {
+      const updates: string[] = [];
+      const values: any[] = [];
+      if (username !== undefined) { updates.push("username = ?"); values.push(username); }
+      if (displayName !== undefined) { updates.push("displayName = ?"); values.push(displayName); }
+      if (role !== undefined) { updates.push("role = ?"); values.push(role); }
+      if (password) { updates.push("password = ?"); values.push(bcrypt.hashSync(password, 10)); }
+      if (updates.length === 0) return res.json({ message: "Nothing to update" });
+      values.push(id);
+      db.prepare(`UPDATE users SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      res.json({ message: "Usuario actualizado" });
+    } catch (err: any) {
+      if (err.message?.includes('UNIQUE')) return res.status(400).json({ error: "El nombre de usuario ya existe" });
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/users/:id", requireAdmin, (req, res) => {
+    const { id } = req.params;
+    if (id === 'admin') return res.status(400).json({ error: "No se puede eliminar el admin" });
+    try {
+      db.prepare("DELETE FROM users WHERE id = ?").run(id);
+      res.json({ message: "Usuario eliminado" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 
