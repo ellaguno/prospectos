@@ -916,24 +916,25 @@ export default function App() {
               </div>
             </div>
           )}
-          {isAdmin && (
+          <div className="flex items-center gap-1">
             <button
-              onClick={() => { setShowUserAdmin(true); fetchUsers(); }}
-              className="w-full flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-slate-900 transition-colors text-xs"
-              title="Administrar usuarios"
+              onClick={handleLogout}
+              className="flex-1 flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-red-500 transition-colors text-xs"
+              title="Cerrar sesión"
             >
-              <Settings size={14} />
-              {!sidebarCollapsed && <span>Usuarios</span>}
+              <X size={14} />
+              {!sidebarCollapsed && <span className="truncate">{authUser?.displayName || 'Salir'}</span>}
             </button>
-          )}
-          <button
-            onClick={handleLogout}
-            className="w-full flex items-center justify-center gap-2 p-2 text-slate-400 hover:text-red-500 transition-colors text-xs"
-            title="Cerrar sesión"
-          >
-            <X size={14} />
-            {!sidebarCollapsed && <span>{authUser?.displayName || 'Salir'}</span>}
-          </button>
+            {isAdmin && (
+              <button
+                onClick={() => { setShowUserAdmin(true); fetchUsers(); }}
+                className="p-2 text-slate-400 hover:text-slate-900 transition-colors shrink-0"
+                title="Administrar usuarios"
+              >
+                <Settings size={14} />
+              </button>
+            )}
+          </div>
         </div>
       </nav>
 
