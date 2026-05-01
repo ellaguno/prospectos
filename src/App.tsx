@@ -184,8 +184,6 @@ export default function App() {
     setAuthUser(null);
   };
 
-  if (!authChecked) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="w-6 h-6 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /></div>;
-  if (!authUser) return <LoginScreen onLogin={setAuthUser} />;
   const [prospects, setProspects] = useState<Prospect[]>([]);
   const [searchTerm, setSearchTerm] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('All');
@@ -811,6 +809,9 @@ export default function App() {
     setNewProspect({ name: '', specialty: '', location: '', contact: '', email: '', category: 'Salud', source: '' });
     setIsAdding(false);
   };
+
+  if (!authChecked) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="w-6 h-6 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /></div>;
+  if (!authUser) return <LoginScreen onLogin={setAuthUser} />;
 
   return (
     <div className="min-h-screen bg-slate-50 font-sans text-slate-900">
