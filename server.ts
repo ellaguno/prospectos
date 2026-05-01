@@ -69,15 +69,69 @@ async function discoverWithGemini(categories: string[], location: string, custom
   return JSON.parse(jsonMatch[0]);
 }
 
+// Try to parse CSV/TSV directly without AI
+function tryParseCSV(text: string): any | null {
+  const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+
+  // Detect separator: semicolon, comma, or tab
+  // Skip BOM and "sep=X" directives
+  let startIdx = 0;
+  let separator = ',';
+  const firstLine = lines[0].replace(/^\uFEFF/, '');
+  if (firstLine.toLowerCase().startsWith('sep=')) {
+    separator = firstLine.charAt(4);
+    startIdx = 1;
+  } else if (firstLine.includes('\t')) {
+    separator = '\t';
+  } else if (firstLine.includes(';')) {
+    separator = ';';
+  }
+
+  const headerLine = lines[startIdx];
+  const headers = headerLine.split(separator).map(h => h.replace(/^"|"$/g, '').trim().toLowerCase());
+
+  // Need at least a "name" or "nombre" column
+  const nameIdx = headers.findIndex(h => ['name', 'nombre', 'nombre completo', 'full name'].includes(h));
+  if (nameIdx === -1) return null;
+
+  const findCol = (...names: string[]) => headers.findIndex(h => names.some(n => h.includes(n)));
+  const specIdx = findCol('especialidad', 'specialty', 'cargo', 'título', 'title', 'organización', 'empresa', 'company');
+  const locIdx = findCol('ubicación', 'location', 'ciudad', 'city', 'zona', 'dirección', 'address');
+  const phoneIdx = findCol('teléfono', 'telefono', 'phone', 'contacto', 'tel', 'celular', 'móvil', 'movil');
+  const emailIdx = findCol('email', 'correo', 'e-mail', 'mail');
+  const catIdx = findCol('categoría', 'categoria', 'category', 'tipo', 'type');
+  const sourceIdx = findCol('fuente', 'source', 'origen', 'url', 'sitio');
+
+  const leads: any[] = [];
+  for (let i = startIdx + 1; i < lines.length; i++) {
+    const cols = lines[i].split(separator).map(c => c.replace(/^"|"$/g, '').trim());
+    const name = cols[nameIdx];
+    if (!name) continue;
+    leads.push({
+      name,
+      specialty: specIdx >= 0 ? cols[specIdx] || '' : '',
+      location: locIdx >= 0 ? cols[locIdx] || '' : '',
+      contact: phoneIdx >= 0 ? cols[phoneIdx] || '' : '',
+      email: emailIdx >= 0 ? cols[emailIdx] || '' : '',
+      category: catIdx >= 0 ? cols[catIdx] || 'Otros' : 'Otros',
+      source: sourceIdx >= 0 ? cols[sourceIdx] || 'CSV Import' : 'CSV Import',
+    });
+  }
+
+  return leads.length > 0 ? { leads } : null;
+}
+
 async function extractWithGemini(textContent: string): Promise<any> {
   if (!ai) throw new Error("Gemini not configured");
 
-  const prompt = `Extrae información de prospectos del siguiente texto pegado de un sitio web.
+  const prompt = `Extrae información de prospectos/contactos del siguiente texto. Puede ser contenido de un sitio web, un CSV, una lista, un directorio, correos, o cualquier formato.
 
   Texto: """${textContent}"""
 
-  Detecta nombres, especialidades, clínicas, teléfonos, correos electrónicos y ubicaciones.
-  Clasifica cada lead en una de estas categorías: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.`;
+  Para CADA persona o profesional que encuentres, extrae: nombre completo, especialidad/cargo/empresa, ubicación/ciudad, teléfono, correo electrónico, y fuente.
+  Clasifica cada lead en una de estas categorías: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.
+  Si el texto es un CSV o tabla, interpreta las columnas correctamente.`;
 
   const response = await ai.models.generateContent({
     model: "gemini-2.5-flash",
@@ -541,7 +595,14 @@ Responde ÚNICAMENTE con JSON válido:
   app.post("/api/extract", async (req, res) => {
     const { text } = req.body;
     try {
-      // Try Gemini first
+      // Step 1: Try direct CSV/TSV parsing (no AI needed)
+      const csvResult = tryParseCSV(text);
+      if (csvResult) {
+        console.log(`[Extract] CSV parseado directamente - ${csvResult.leads.length} leads`);
+        return res.json(csvResult);
+      }
+
+      // Step 2: Try Gemini
       if (geminiEnabled) {
         try {
           console.log(`[Extract] Intentando Gemini...`);
@@ -553,13 +614,13 @@ Responde ÚNICAMENTE con JSON válido:
         }
       }
 
-      // Fallback: OpenRouter
-      const prompt = `Extrae información de prospectos del siguiente texto pegado de un sitio web.
+      // Step 3: Fallback OpenRouter
+      const prompt = `Extrae información de prospectos/contactos del siguiente texto. Puede ser contenido de un sitio web, CSV, lista, directorio, o cualquier formato.
 
 Texto: """${text}"""
 
-Detecta nombres, especialidades, clínicas, teléfonos, correos electrónicos y ubicaciones.
-Clasifica cada lead en una de estas categorías: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.
+Para CADA persona o profesional que encuentres, extrae: nombre, especialidad/cargo, ubicación, teléfono, email, y fuente.
+Clasifica cada lead en: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.
 
 Responde ÚNICAMENTE con JSON válido:
 {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`;

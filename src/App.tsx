@@ -730,17 +730,18 @@ export default function App() {
     }
   };
 
+  const [extractionError, setExtractionError] = useState('');
+
   const handleExtraction = async () => {
     if (!clipboardText) return;
     setIsDiscovering(true);
+    setExtractionError('');
     try {
       const data = await extractFromText(clipboardText);
-      if (data.leads) {
-        // Map extracted leads to current category or detect if possible
+      if (data.leads && data.leads.length > 0) {
         const mappedLeads = data.leads.map((l: any) => {
           let category: Prospect['category'] = (activeCategory === 'All' ? 'Otros' : activeCategory) as any;
-          
-          // Re-validate category if "All" was selected or if lead content suggests otherwise
+
           const combined = ((l.specialty || '') + ' ' + (l.category || '')).toLowerCase();
           if (combined.includes('doctor') || combined.includes('dentista')) category = 'Salud';
           if (combined.includes('abogado') || combined.includes('notario')) category = 'Legal';
@@ -752,6 +753,8 @@ export default function App() {
         await saveToApi(mappedLeads);
         setClipboardText('');
         setShowClipboard(false);
+      } else {
+        setExtractionError(`No se encontraron prospectos en el texto. Asegúrate de que contenga nombres y datos de contacto.`);
       }
     } catch (error) {
       console.error("Extraction failed", error);
@@ -1108,22 +1111,28 @@ export default function App() {
             >
               <div className="bg-white border border-slate-900 p-8">
                 <h3 className="font-medium text-lg mb-2">Extracción Inteligente</h3>
-                <p className="text-slate-500 text-sm mb-6">Pega texto de directorios o redes sociales para extraer leads automáticamente.</p>
-                <textarea 
-                  className="w-full h-32 bg-slate-50 border border-slate-200 p-4 text-slate-900 text-sm focus:outline-none focus:border-slate-900 transition-colors resize-none"
-                  placeholder="Contenido a procesar..."
+                <p className="text-slate-500 text-sm mb-6">Pega texto de cualquier fuente: CSV, directorio, red social, email, lista de contactos, etc.</p>
+                <textarea
+                  className="w-full h-32 bg-slate-50 border border-slate-200 p-4 text-slate-900 text-sm focus:outline-none focus:border-slate-900 transition-colors resize-none font-mono"
+                  placeholder={"Nombre;Especialidad;Ciudad;Teléfono;Email\nDr. Juan Pérez;Cardiólogo;CDMX;5512345678;juan@clinica.com\n\n— o pega cualquier texto con datos de contacto —"}
                   value={clipboardText}
-                  onChange={(e) => setClipboardText(e.target.value)}
+                  onChange={(e) => { setClipboardText(e.target.value); setExtractionError(''); }}
                 />
-                <div className="mt-6 flex justify-end gap-3">
-                  <button onClick={() => setShowClipboard(false)} className="text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-900 transition-colors">Cancelar</button>
-                  <button 
-                    disabled={isDiscovering || !clipboardText}
-                    onClick={handleExtraction}
-                    className="btn-primary text-xs flex items-center gap-2 disabled:opacity-50"
-                  >
-                    {isDiscovering ? "Procesando..." : "Extraer Información"}
-                  </button>
+                {extractionError && (
+                  <p className="mt-2 text-xs text-red-500">{extractionError}</p>
+                )}
+                <div className="mt-6 flex items-center justify-between">
+                  <span className="text-[10px] text-slate-400">CSV, TSV, texto libre, HTML — cualquier formato</span>
+                  <div className="flex gap-3">
+                    <button onClick={() => { setShowClipboard(false); setExtractionError(''); }} className="text-[10px] font-bold uppercase tracking-widest text-slate-400 hover:text-slate-900 transition-colors">Cancelar</button>
+                    <button
+                      disabled={isDiscovering || !clipboardText}
+                      onClick={handleExtraction}
+                      className="btn-primary text-xs flex items-center gap-2 disabled:opacity-50"
+                    >
+                      {isDiscovering ? "Procesando..." : "Extraer Información"}
+                    </button>
+                  </div>
                 </div>
               </div>
             </motion.div>
