@@ -277,9 +277,40 @@ async function startServer() {
   // API Routes
   app.get("/api/prospects", (req, res) => {
     const userId = (req as any).user.id;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(req.query.limit as string) || 50));
+    const search = (req.query.search as string || '').trim();
+    const category = (req.query.category as string || '').trim();
+    const sort = (req.query.sort as string || 'date');
+    const all = req.query.all === 'true'; // for export
+
     try {
-      const rows = db.prepare("SELECT * FROM prospects WHERE userId = ? ORDER BY createdAt DESC").all(userId);
-      res.json(rows);
+      let where = "WHERE userId = ?";
+      const params: any[] = [userId];
+
+      if (search) {
+        where += " AND (name LIKE ? OR specialty LIKE ? OR location LIKE ?)";
+        const like = `%${search}%`;
+        params.push(like, like, like);
+      }
+      if (category && category !== 'All') {
+        where += " AND category = ?";
+        params.push(category);
+      }
+
+      const orderBy = sort === 'name' ? 'name ASC' : sort === 'quality' ? "CASE contactQuality WHEN 'qualified' THEN 0 WHEN 'direct' THEN 1 WHEN 'generic' THEN 2 WHEN 'pending' THEN 3 WHEN 'disqualified' THEN 4 ELSE 3 END" : 'createdAt DESC';
+
+      const total = (db.prepare(`SELECT COUNT(*) as count FROM prospects ${where}`).get(...params) as any).count;
+
+      let rows;
+      if (all) {
+        rows = db.prepare(`SELECT * FROM prospects ${where} ORDER BY ${orderBy}`).all(...params);
+      } else {
+        const offset = (page - 1) * limit;
+        rows = db.prepare(`SELECT * FROM prospects ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`).all(...params, limit, offset);
+      }
+
+      res.json({ data: rows, total, page, limit, totalPages: Math.ceil(total / limit) });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

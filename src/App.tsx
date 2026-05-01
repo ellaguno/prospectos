@@ -8,7 +8,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import * as XLSX from 'xlsx-js-style';
 import {
   Users,
@@ -194,8 +194,20 @@ export default function App() {
   };
 
   const [prospects, setProspects] = useState<Prospect[]>([]);
+  const [totalProspects, setTotalProspects] = useState(0);
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const PAGE_SIZE = 50;
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchInput, setSearchInput] = useState('');
+  const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
+  const handleSearchInput = useCallback((value: string) => {
+    setSearchInput(value);
+    clearTimeout(searchTimeout.current);
+    searchTimeout.current = setTimeout(() => setSearchTerm(value), 400);
+  }, []);
   const [activeCategory, setActiveCategory] = useState<string>('All');
+  const [sortBy, setSortBy] = useState<'name' | 'quality' | 'date'>('date');
   const [roles, setRoles] = useState<string[]>(() => {
     const saved = localStorage.getItem('prospectos_all_roles');
     return saved ? JSON.parse(saved) : ['Doctores', 'Abogados', 'Notarios', 'Inversionistas', 'Empresarios', 'Ingenieros', 'Arquitectos', 'Candidatos', 'Especialistas'];
@@ -274,15 +286,11 @@ export default function App() {
       const newContact = directPhone || prospect.contact;
       const newEmail = directEmail || prospect.email;
       const newQuality = detectContactQuality(newContact, newEmail);
-      await fetch(`/api/prospects/${prospect.id}`, {
+      await authFetch(`/api/prospects/${prospect.id}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ contact: newContact, email: newEmail, contactQuality: newQuality }),
       });
-      // Refresh
-      const response = await authFetch('/api/prospects');
-      const data = await response.json();
-      setProspects(data);
+      await refreshProspects();
       setSelectedProspect({ ...prospect, contact: newContact, email: newEmail, contactQuality: newQuality });
       setEnrichResult(null);
     } catch (error) {
@@ -290,36 +298,51 @@ export default function App() {
     }
   };
 
+  // Centralized fetch with pagination, search, category, sort
+  const refreshProspects = async (opts?: { page?: number; all?: boolean }) => {
+    try {
+      const page = opts?.page ?? currentPage;
+      const params = new URLSearchParams();
+      params.set('page', String(page));
+      params.set('limit', String(PAGE_SIZE));
+      if (searchTerm) params.set('search', searchTerm);
+      if (activeCategory && activeCategory !== 'All') params.set('category', activeCategory);
+      params.set('sort', sortBy);
+      if (opts?.all) params.set('all', 'true');
+      const response = await authFetch(`/api/prospects?${params}`);
+      if (!response.ok) return opts?.all ? [] : undefined;
+      const result = await response.json();
+      if (opts?.all) return result.data || [];
+      setProspects(result.data || []);
+      setTotalProspects(result.total || 0);
+      setCurrentPage(result.page || 1);
+      setTotalPages(result.totalPages || 1);
+    } catch (error) {
+      console.error("Fetch failed", error);
+      if (opts?.all) return [];
+    }
+  };
+
   // Sync with SQLite API
   useEffect(() => {
     if (!authUser) return;
-    const fetchProspects = async () => {
-      try {
-        const response = await authFetch('/api/prospects');
-        if (!response.ok) return;
-        const data = await response.json();
-        if (Array.isArray(data)) setProspects(data);
-      } catch (error) {
-        console.error("Fetch failed", error);
-      }
-    };
-
-    fetchProspects();
-
-    // Check continuous status
+    refreshProspects({ page: 1 });
     authFetch('/api/continuous/status').then(r => r.json()).then(d => setIsContinuousRunning(d.active)).catch(() => {});
   }, [authUser]);
+
+  // Re-fetch when search, category, or sort changes
+  useEffect(() => {
+    if (!authUser) return;
+    setCurrentPage(1);
+    refreshProspects({ page: 1 });
+  }, [searchTerm, activeCategory, sortBy]);
 
   // Auto-refresh prospects while continuous discovery is running
   useEffect(() => {
     if (!isContinuousRunning || !authUser) return;
     const interval = setInterval(async () => {
       try {
-        const response = await authFetch('/api/prospects');
-        if (response.ok) {
-          const data = await response.json();
-          if (Array.isArray(data)) setProspects(data);
-        }
+        refreshProspects();
         const statusRes = await authFetch('/api/continuous/status');
         const statusData = await statusRes.json();
         if (!statusData.active) setIsContinuousRunning(false);
@@ -336,10 +359,7 @@ export default function App() {
         body: JSON.stringify(newLeads)
       });
       if (response.ok) {
-        // Refresh local state
-        const refreshResponse = await authFetch('/api/prospects');
-        const data = await refreshResponse.json();
-        setProspects(data);
+        await refreshProspects({ page: 1 });
       }
     } catch (error) {
       console.error("Save failed", error);
@@ -363,7 +383,6 @@ export default function App() {
   });
   useEffect(() => { localStorage.setItem('prospectos_sidebar', sidebarCollapsed ? 'collapsed' : 'open'); }, [sidebarCollapsed]);
 
-  const [sortBy, setSortBy] = useState<'name' | 'quality' | 'date'>('date');
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [isReviewingAll, setIsReviewingAll] = useState(false);
   const [reviewProgress, setReviewProgress] = useState({ done: 0, total: 0 });
@@ -410,29 +429,8 @@ export default function App() {
     } catch {}
   };
 
-  const filteredProspects = useMemo(() => {
-    const filtered = prospects.filter(p => {
-      const matchesSearch = p.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                            p.specialty.toLowerCase().includes(searchTerm.toLowerCase());
-      const matchesCategory = activeCategory === 'All' || p.category === activeCategory;
-      return matchesSearch && matchesCategory;
-    });
-
-    // Sort
-    const qualityOrder: Record<string, number> = { qualified: 0, direct: 1, generic: 2, pending: 3, disqualified: 4 };
-    if (sortBy === 'quality') {
-      filtered.sort((a, b) => {
-        const qa = qualityOrder[a.contactQuality || detectContactQuality(a.contact, a.email || '')] ?? 2;
-        const qb = qualityOrder[b.contactQuality || detectContactQuality(b.contact, b.email || '')] ?? 2;
-        return qa - qb;
-      });
-    } else if (sortBy === 'name') {
-      filtered.sort((a, b) => a.name.localeCompare(b.name));
-    }
-    // 'date' keeps default DB order (createdAt DESC)
-
-    return filtered;
-  }, [prospects, searchTerm, activeCategory, sortBy]);
+  // filteredProspects is now just the server-paginated data
+  const filteredProspects = prospects;
 
   const handleReviewAll = async (onlyPending = false) => {
     const targets = prospects.filter(p => {
@@ -489,10 +487,7 @@ export default function App() {
       setReviewProgress({ done: i + 1, total: targets.length });
     }
 
-    // Refresh
-    const response = await authFetch('/api/prospects');
-    const data = await response.json();
-    setProspects(data);
+    await refreshProspects();
     setIsReviewingAll(false);
   };
 
@@ -548,12 +543,9 @@ export default function App() {
     try {
       await authFetch('/api/prospects', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [...selectedIds] }),
       });
-      const response = await authFetch('/api/prospects');
-      const data = await response.json();
-      setProspects(data);
+      await refreshProspects();
       setSelectedIds(new Set());
     } catch (error) {
       console.error("Delete failed", error);
@@ -599,9 +591,7 @@ export default function App() {
       setReviewProgress({ done: i + 1, total: targets.length });
     }
 
-    const response = await authFetch('/api/prospects');
-    const data = await response.json();
-    setProspects(data);
+    await refreshProspects();
     setIsReviewingAll(false);
     setSelectedIds(new Set());
   };
@@ -650,11 +640,8 @@ export default function App() {
         method: 'PATCH',
         body: JSON.stringify({ contactQuality: status }),
       });
-      const response = await authFetch('/api/prospects');
-      const data = await response.json();
-      setProspects(data);
-      const updated = data.find((p: Prospect) => p.id === prospect.id);
-      if (updated) setSelectedProspect(updated);
+      await refreshProspects();
+      setSelectedProspect({ ...prospect, contactQuality: status });
     } catch (error) {
       console.error("Qualify failed", error);
     }
@@ -685,11 +672,8 @@ export default function App() {
         method: 'PATCH',
         body: JSON.stringify({ ...editForm, contactQuality: newQ }),
       });
-      const response = await authFetch('/api/prospects');
-      const data = await response.json();
-      setProspects(data);
-      const updated = data.find((p: Prospect) => p.id === selectedProspect.id);
-      if (updated) setSelectedProspect(updated);
+      await refreshProspects();
+      setSelectedProspect({ ...selectedProspect, ...editForm, contactQuality: newQ } as Prospect);
       setIsEditing(false);
     } catch (error) {
       console.error("Save edit failed", error);
@@ -701,12 +685,9 @@ export default function App() {
     try {
       await authFetch('/api/prospects', {
         method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: [prospect.id] }),
       });
-      const response = await authFetch('/api/prospects');
-      const data = await response.json();
-      setProspects(data);
+      await refreshProspects();
       setSelectedProspect(null);
     } catch (error) {
       console.error("Delete failed", error);
@@ -779,9 +760,10 @@ export default function App() {
     }
   };
 
-  const exportToExcel = () => {
-    // Sort by category for grouping
-    const sorted = [...prospects].sort((a, b) => a.category.localeCompare(b.category));
+  const exportToExcel = async () => {
+    // Fetch ALL prospects for export
+    const allData = await refreshProspects({ all: true }) as Prospect[] || [];
+    const sorted = [...allData].sort((a, b) => a.category.localeCompare(b.category));
 
     const headers = ['Nombre', 'Especialidad', 'Ubicación', 'Contacto', 'Email', 'Categoría', 'Calidad', 'Fuente'];
     const headerStyle = {
@@ -857,10 +839,10 @@ export default function App() {
     XLSX.writeFile(workbook, 'prospectos.xlsx');
   };
 
-  const exportToCSV = () => {
+  const exportToCSV = async () => {
+    const allData = await refreshProspects({ all: true }) as Prospect[] || [];
     const headers = ['Nombre', 'Especialidad', 'Ubicación', 'Contacto', 'Email', 'Categoría', 'Fuente'];
-    // Quoting values and using semicolon for Excel compatibility in Spanish regions
-    const rows = prospects.map(p => [
+    const rows = allData.map(p => [
       `"${p.name.replace(/"/g, '""')}"`,
       `"${p.specialty.replace(/"/g, '""')}"`,
       `"${p.location.replace(/"/g, '""')}"`,
@@ -951,12 +933,12 @@ export default function App() {
             <div>
               <div className="flex justify-between items-end mb-2">
                 <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Total</span>
-                <span className="text-[10px] font-mono text-slate-500">{prospects.length}</span>
+                <span className="text-[10px] font-mono text-slate-500">{totalProspects}</span>
               </div>
               <div className="w-full bg-slate-100 h-1 rounded-full overflow-hidden">
                 <motion.div
                   initial={{ width: 0 }}
-                  animate={{ width: `${Math.min(prospects.length, 100)}%` }}
+                  animate={{ width: `${Math.min(totalProspects, 100)}%` }}
                   className="bg-slate-900 h-full"
                 />
               </div>
@@ -1098,7 +1080,7 @@ export default function App() {
         {/* Stats Grid */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-px bg-slate-200 border border-slate-200 mb-12 shadow-sm rounded-lg overflow-hidden">
           {[
-            { label: 'Registros', value: prospects.length },
+            { label: 'Registros', value: totalProspects },
             { label: 'Salud', value: prospects.filter(p => p.category === 'Salud').length },
             { label: 'Legal', value: prospects.filter(p => p.category === 'Legal').length },
             { label: 'Inversión', value: prospects.filter(p => p.category === 'Inversión').length },
@@ -1120,8 +1102,8 @@ export default function App() {
               type="text"
               placeholder="Filtrar por nombre, especialidad o ubicación..."
               className="w-full pl-12 pr-4 py-3 bg-white border border-slate-200 focus:outline-none focus:border-slate-900 transition-all text-sm text-slate-900"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
+              value={searchInput}
+              onChange={(e) => handleSearchInput(e.target.value)}
             />
           </div>
           <div className="flex items-center gap-2">
@@ -1286,7 +1268,7 @@ export default function App() {
                               authFetch(`/api/prospects/${prospect.id}`, {
                                 method: 'PATCH',
                                 body: JSON.stringify({ contactQuality: q }),
-                              }).then(() => authFetch('/api/prospects').then(r => r.json()).then(setProspects));
+                              }).then(() => refreshProspects());
                             }}
                             title="Calificar"
                             className="p-1.5 text-slate-400 hover:text-amber-500 hover:bg-amber-50 rounded transition-colors"
@@ -1351,6 +1333,54 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200">
+              <span className="text-xs text-slate-500">
+                {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, totalProspects)} de {totalProspects}
+              </span>
+              <div className="flex items-center gap-1">
+                <button
+                  disabled={currentPage <= 1}
+                  onClick={() => { setCurrentPage(currentPage - 1); refreshProspects({ page: currentPage - 1 }); }}
+                  className="px-3 py-1.5 text-xs border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  Anterior
+                </button>
+                {Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+                  let page: number;
+                  if (totalPages <= 7) {
+                    page = i + 1;
+                  } else if (currentPage <= 4) {
+                    page = i + 1;
+                  } else if (currentPage >= totalPages - 3) {
+                    page = totalPages - 6 + i;
+                  } else {
+                    page = currentPage - 3 + i;
+                  }
+                  return (
+                    <button
+                      key={page}
+                      onClick={() => { setCurrentPage(page); refreshProspects({ page }); }}
+                      className={`w-8 h-8 text-xs rounded transition-colors ${
+                        page === currentPage ? 'bg-slate-900 text-white' : 'hover:bg-slate-100 text-slate-600'
+                      }`}
+                    >
+                      {page}
+                    </button>
+                  );
+                })}
+                <button
+                  disabled={currentPage >= totalPages}
+                  onClick={() => { setCurrentPage(currentPage + 1); refreshProspects({ page: currentPage + 1 }); }}
+                  className="px-3 py-1.5 text-xs border border-slate-200 rounded hover:bg-slate-50 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                >
+                  Siguiente
+                </button>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Resources Grid */}
