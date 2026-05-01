@@ -884,6 +884,52 @@ export default function App() {
     setIsAdding(false);
   };
 
+  // --- Search Person ---
+  const [showSearchPerson, setShowSearchPerson] = useState(false);
+  const [searchPersonForm, setSearchPersonForm] = useState({ name: '', location: '', specialty: '', category: 'Profesionales' as Prospect['category'] });
+  const [searchPersonLoading, setSearchPersonLoading] = useState(false);
+
+  const handleSearchPerson = async () => {
+    if (!searchPersonForm.name.trim()) return;
+    setSearchPersonLoading(true);
+    try {
+      // 1. Create prospect
+      const res = await authFetch('/api/prospects', {
+        method: 'POST',
+        body: JSON.stringify([{
+          name: searchPersonForm.name.trim(),
+          location: searchPersonForm.location.trim(),
+          specialty: searchPersonForm.specialty.trim(),
+          contact: '',
+          email: '',
+          category: searchPersonForm.category,
+          source: 'Búsqueda directa',
+        }]),
+      });
+      if (!res.ok) throw new Error('Save failed');
+
+      // 2. Refresh to get the new prospect with ID
+      await refreshProspects({ page: 1 });
+
+      // Small delay to ensure state update
+      const listRes = await authFetch(`/api/prospects?search=${encodeURIComponent(searchPersonForm.name.trim())}&limit=1`);
+      const listData = await listRes.json();
+      const created = listData.data?.[0];
+
+      if (created) {
+        // 3. Open detail and run OSINT automatically
+        setSelectedProspect(created);
+        setShowSearchPerson(false);
+        setSearchPersonForm({ name: '', location: '', specialty: '', category: 'Profesionales' });
+        handleEnrich(created);
+      }
+    } catch (error) {
+      console.error("Search person failed", error);
+    } finally {
+      setSearchPersonLoading(false);
+    }
+  };
+
   if (!authChecked) return <div className="min-h-screen bg-slate-50 flex items-center justify-center"><div className="w-6 h-6 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /></div>;
   if (!authUser) return <LoginScreen onLogin={setAuthUser} />;
 
@@ -1004,12 +1050,19 @@ export default function App() {
           </div>
           
           <div className="flex flex-wrap items-center gap-2">
-            <button 
+            <button
               onClick={() => setIsAdding(true)}
               className="btn-primary flex items-center gap-2 text-xs"
             >
               <Plus size={14} />
               Añadir manual
+            </button>
+            <button
+              onClick={() => setShowSearchPerson(true)}
+              className="btn-primary flex items-center gap-2 text-xs bg-blue-600 hover:bg-blue-700 border-blue-600"
+            >
+              <Search size={14} />
+              Buscar persona
             </button>
             <button 
               disabled={isDiscovering}
@@ -2040,6 +2093,99 @@ export default function App() {
               </div>
                 </>
               )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Search Person Modal */}
+      <AnimatePresence>
+        {showSearchPerson && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowSearchPerson(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-md bg-white border border-slate-900 shadow-2xl p-10"
+            >
+              <h2 className="text-2xl font-light text-slate-900 mb-2">Buscar Persona</h2>
+              <p className="text-xs text-slate-500 mb-8">Ingresa el nombre y la ciudad. Se creará el prospecto y se ejecutará OSINT automáticamente para localizar sus datos de contacto.</p>
+
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre completo</label>
+                  <input
+                    autoFocus
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                    value={searchPersonForm.name}
+                    onChange={e => setSearchPersonForm({ ...searchPersonForm, name: e.target.value })}
+                    placeholder="Dr. Juan Pérez López"
+                    onKeyDown={e => { if (e.key === 'Enter' && searchPersonForm.name.trim()) handleSearchPerson(); }}
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-6">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Ciudad</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={searchPersonForm.location}
+                      onChange={e => setSearchPersonForm({ ...searchPersonForm, location: e.target.value })}
+                      placeholder="Ciudad de México"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Especialidad (opcional)</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={searchPersonForm.specialty}
+                      onChange={e => setSearchPersonForm({ ...searchPersonForm, specialty: e.target.value })}
+                      placeholder="Cardiólogo, Abogado..."
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Categoría</label>
+                  <select
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-xs"
+                    value={searchPersonForm.category}
+                    onChange={e => setSearchPersonForm({ ...searchPersonForm, category: e.target.value as any })}
+                  >
+                    <option value="Salud">Salud</option>
+                    <option value="Legal">Legal</option>
+                    <option value="Inversión">Inversión</option>
+                    <option value="Arquitectura">Arquitectura</option>
+                    <option value="Profesionales">Profesionales</option>
+                    <option value="Otros">Otros</option>
+                  </select>
+                </div>
+              </div>
+
+              <div className="mt-10 flex items-center justify-between">
+                <button
+                  onClick={() => setShowSearchPerson(false)}
+                  className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  disabled={searchPersonLoading || !searchPersonForm.name.trim()}
+                  onClick={handleSearchPerson}
+                  className="btn-primary text-xs flex items-center gap-2 bg-blue-600 hover:bg-blue-700 border-blue-600"
+                >
+                  {searchPersonLoading ? (
+                    <><div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> Buscando...</>
+                  ) : (
+                    <><Search size={14} /> Buscar y localizar</>
+                  )}
+                </button>
+              </div>
             </motion.div>
           </div>
         )}
