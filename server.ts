@@ -109,6 +109,8 @@ db.exec(`CREATE TABLE IF NOT EXISTS prospects (
 )`);
 // Migration: add contactQuality column if missing
 try { db.exec(`ALTER TABLE prospects ADD COLUMN contactQuality TEXT DEFAULT 'pending'`); } catch {};
+// Migration: add userId column
+try { db.exec(`ALTER TABLE prospects ADD COLUMN userId TEXT DEFAULT 'admin'`); } catch {};
 
 // --- Users table ---
 db.exec(`CREATE TABLE IF NOT EXISTS users (
@@ -247,8 +249,9 @@ async function startServer() {
 
   // API Routes
   app.get("/api/prospects", (req, res) => {
+    const userId = (req as any).user.id;
     try {
-      const rows = db.prepare("SELECT * FROM prospects ORDER BY createdAt DESC").all();
+      const rows = db.prepare("SELECT * FROM prospects WHERE userId = ? ORDER BY createdAt DESC").all(userId);
       res.json(rows);
     } catch (err: any) {
       res.status(500).json({ error: err.message });
@@ -256,13 +259,14 @@ async function startServer() {
   });
 
   app.post("/api/prospects", (req, res) => {
+    const userId = (req as any).user.id;
     const prospects = Array.isArray(req.body) ? req.body : [req.body];
-    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
-    
+    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
     const transaction = db.transaction((leads) => {
       for (const p of leads) {
         const id = Math.random().toString(36).substr(2, 9);
-        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source);
+        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, userId);
       }
     });
 
@@ -496,6 +500,7 @@ Responde ÚNICAMENTE con JSON válido:
   // Update a prospect
   app.patch("/api/prospects/:id", (req, res) => {
     const { id } = req.params;
+    const userId = (req as any).user.id;
     const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality'];
     try {
       const updates: string[] = [];
@@ -507,23 +512,24 @@ Responde ÚNICAMENTE con JSON válido:
         }
       }
       if (updates.length === 0) return res.json({ message: "Nothing to update" });
-      values.push(id);
-      db.prepare(`UPDATE prospects SET ${updates.join(", ")} WHERE id = ?`).run(...values);
+      values.push(id, userId);
+      db.prepare(`UPDATE prospects SET ${updates.join(", ")} WHERE id = ? AND userId = ?`).run(...values);
       res.json({ message: "Actualizado" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
   });
 
-  // Delete prospects (accepts array of IDs)
+  // Delete prospects (accepts array of IDs, scoped to user)
   app.delete("/api/prospects", (req, res) => {
+    const userId = (req as any).user.id;
     const { ids } = req.body;
     if (!ids || !Array.isArray(ids) || ids.length === 0) {
       return res.status(400).json({ error: "ids array required" });
     }
     try {
       const placeholders = ids.map(() => '?').join(',');
-      db.prepare(`DELETE FROM prospects WHERE id IN (${placeholders})`).run(...ids);
+      db.prepare(`DELETE FROM prospects WHERE id IN (${placeholders}) AND userId = ?`).run(...ids, userId);
       res.json({ message: `${ids.length} prospecto(s) eliminado(s)` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
