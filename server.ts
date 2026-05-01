@@ -288,9 +288,24 @@ async function startServer() {
   app.post("/api/prospects", (req, res) => {
     const userId = (req as any).user.id;
     const prospects = Array.isArray(req.body) ? req.body : [req.body];
+
+    // Deduplicate against existing prospects
+    const existing = db.prepare("SELECT name FROM prospects WHERE userId = ?").all(userId) as any[];
+    const existingNames = new Set(existing.map((r: any) => r.name.toLowerCase().trim()));
+    const uniqueLeads = prospects.filter((p: any) => {
+      const key = (p.name || '').toLowerCase().trim();
+      if (!key || existingNames.has(key)) return false;
+      existingNames.add(key); // also deduplicate within the batch
+      return true;
+    });
+
+    if (uniqueLeads.length === 0) {
+      return res.json({ message: "No hay prospectos nuevos (todos duplicados)", duplicates: prospects.length });
+    }
+
     const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
 
-    const transaction = db.transaction((leads) => {
+    const transaction = db.transaction((leads: any[]) => {
       for (const p of leads) {
         const id = Math.random().toString(36).substr(2, 9);
         const url = p.url || extractUrlFromSource(p.source, p.email);
@@ -299,8 +314,9 @@ async function startServer() {
     });
 
     try {
-      transaction(prospects);
-      res.json({ message: "Guardado exitosamente" });
+      transaction(uniqueLeads);
+      const skipped = prospects.length - uniqueLeads.length;
+      res.json({ message: `${uniqueLeads.length} guardado(s)${skipped > 0 ? `, ${skipped} duplicado(s) omitido(s)` : ''}` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
