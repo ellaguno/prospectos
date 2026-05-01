@@ -37,10 +37,32 @@ import {
   ThumbsDown,
   Play,
   Square,
-  StickyNote
+  StickyNote,
+  Building2,
+  ChevronRight,
+  Sparkles,
+  Mail,
+  Send,
+  Eye,
+  MousePointerClick
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
+
+interface Organization {
+  id: string;
+  name: string;
+  type: string;
+  industry: string;
+  location: string;
+  website: string;
+  phone: string;
+  email: string;
+  notes: string;
+  memberCount?: number;
+  members?: Prospect[];
+  createdAt?: any;
+}
 
 interface Prospect {
   id: string;
@@ -54,6 +76,8 @@ interface Prospect {
   contactQuality?: 'direct' | 'generic' | 'pending' | 'qualified' | 'disqualified';
   notes?: string;
   url?: string;
+  organizationId?: string;
+  orgRole?: string;
   createdAt?: any;
 }
 
@@ -331,6 +355,8 @@ export default function App() {
   useEffect(() => {
     if (!authUser) return;
     refreshProspects({ page: 1 });
+    fetchOrganizations();
+    fetchCampaigns();
     authFetch('/api/continuous/status').then(r => r.json()).then(d => { setIsContinuousRunning(d.active); setContinuousRounds(d.rounds || 0); }).catch(() => {});
   }, [authUser]);
 
@@ -398,6 +424,309 @@ export default function App() {
   const [editingUser, setEditingUser] = useState<any>(null);
   const [userForm, setUserForm] = useState({ username: '', password: '', displayName: '', role: 'user' });
   const [userError, setUserError] = useState('');
+
+  // Organization state
+  const [showOrganizations, setShowOrganizations] = useState(false);
+  const [organizations, setOrganizations] = useState<Organization[]>([]);
+  const [selectedOrg, setSelectedOrg] = useState<Organization | null>(null);
+  const [showOrgModal, setShowOrgModal] = useState(false);
+  const [orgForm, setOrgForm] = useState<Partial<Organization>>({ name: '', type: '', location: '', website: '', phone: '', email: '', notes: '' });
+  const [editingOrg, setEditingOrg] = useState(false);
+  const [isDetectingOrgs, setIsDetectingOrgs] = useState(false);
+  const [detectOrgResult, setDetectOrgResult] = useState('');
+
+  const fetchOrganizations = async (search?: string) => {
+    try {
+      const params = search ? `?search=${encodeURIComponent(search)}` : '';
+      const res = await authFetch(`/api/organizations${params}`);
+      if (res.ok) setOrganizations(await res.json());
+    } catch {}
+  };
+
+  const fetchOrgDetail = async (id: string) => {
+    try {
+      const res = await authFetch(`/api/organizations/${id}`);
+      if (res.ok) {
+        const data = await res.json();
+        setSelectedOrg(data);
+        fetchHierarchy(id);
+      }
+    } catch {}
+  };
+
+  const handleSaveOrg = async () => {
+    if (!orgForm.name) return;
+    try {
+      if (editingOrg && selectedOrg) {
+        await authFetch(`/api/organizations/${selectedOrg.id}`, { method: 'PATCH', body: JSON.stringify(orgForm) });
+        await fetchOrgDetail(selectedOrg.id);
+      } else {
+        await authFetch('/api/organizations', { method: 'POST', body: JSON.stringify(orgForm) });
+        setShowOrgModal(false);
+      }
+      setEditingOrg(false);
+      setOrgForm({ name: '', type: '', location: '', website: '', phone: '', email: '', notes: '' });
+      fetchOrganizations();
+    } catch {}
+  };
+
+  const handleDeleteOrg = async (id: string) => {
+    if (!confirm('¿Eliminar esta organización? Los prospectos asociados quedarán sin organización.')) return;
+    try {
+      await authFetch(`/api/organizations/${id}`, { method: 'DELETE' });
+      setSelectedOrg(null);
+      fetchOrganizations();
+    } catch {}
+  };
+
+  const handleDetectOrgs = async () => {
+    setIsDetectingOrgs(true);
+    setDetectOrgResult('');
+    try {
+      const res = await authFetch('/api/organizations/detect', { method: 'POST' });
+      const data = await res.json();
+      setDetectOrgResult(data.message || 'Detección completada');
+      fetchOrganizations();
+      refreshProspects();
+    } catch {
+      setDetectOrgResult('Error en la detección');
+    } finally {
+      setIsDetectingOrgs(false);
+    }
+  };
+
+  // Hierarchy state
+  const [orgHierarchy, setOrgHierarchy] = useState<any[]>([]);
+  const [isDiscoveringHierarchy, setIsDiscoveringHierarchy] = useState(false);
+  const [hierarchyResult, setHierarchyResult] = useState('');
+  const [showAddHierarchy, setShowAddHierarchy] = useState(false);
+  const [hierarchyForm, setHierarchyForm] = useState({ superiorId: '', subordinateId: '', relationshipType: 'reports_to' });
+
+  // Relationships state
+  const [prospectRelationships, setProspectRelationships] = useState<any[]>([]);
+  const [showAddRelationship, setShowAddRelationship] = useState(false);
+  const [relationshipForm, setRelationshipForm] = useState({ prospectId2: '', type: 'ex_colegas', description: '' });
+  const [isDiscoveringRelations, setIsDiscoveringRelations] = useState(false);
+  const [relationsResult, setRelationsResult] = useState('');
+
+  const fetchHierarchy = async (orgId: string) => {
+    try {
+      const res = await authFetch(`/api/organizations/${orgId}/hierarchy`);
+      if (res.ok) setOrgHierarchy(await res.json());
+    } catch {}
+  };
+
+  const handleDiscoverHierarchy = async (orgId: string) => {
+    setIsDiscoveringHierarchy(true);
+    setHierarchyResult('');
+    try {
+      const res = await authFetch(`/api/organizations/${orgId}/discover-hierarchy`, { method: 'POST' });
+      const data = await res.json();
+      setHierarchyResult(data.message || 'Completado');
+      fetchHierarchy(orgId);
+      fetchOrgDetail(orgId);
+    } catch {
+      setHierarchyResult('Error en la detección');
+    } finally {
+      setIsDiscoveringHierarchy(false);
+    }
+  };
+
+  const handleAddHierarchy = async (orgId: string) => {
+    if (!hierarchyForm.superiorId || !hierarchyForm.subordinateId) return;
+    try {
+      await authFetch(`/api/organizations/${orgId}/hierarchy`, {
+        method: 'POST',
+        body: JSON.stringify(hierarchyForm),
+      });
+      fetchHierarchy(orgId);
+      setShowAddHierarchy(false);
+      setHierarchyForm({ superiorId: '', subordinateId: '', relationshipType: 'reports_to' });
+    } catch {}
+  };
+
+  const handleDeleteHierarchy = async (hId: string, orgId: string) => {
+    try {
+      await authFetch(`/api/org-hierarchy/${hId}`, { method: 'DELETE' });
+      fetchHierarchy(orgId);
+    } catch {}
+  };
+
+  const fetchProspectRelationships = async (prospectId: string) => {
+    try {
+      const res = await authFetch(`/api/prospects/${prospectId}/relationships`);
+      if (res.ok) setProspectRelationships(await res.json());
+    } catch {}
+  };
+
+  const handleAddRelationship = async (prospectId: string) => {
+    if (!relationshipForm.prospectId2 || !relationshipForm.type) return;
+    try {
+      await authFetch('/api/relationships', {
+        method: 'POST',
+        body: JSON.stringify({ prospectId1: prospectId, ...relationshipForm }),
+      });
+      fetchProspectRelationships(prospectId);
+      setShowAddRelationship(false);
+      setRelationshipForm({ prospectId2: '', type: 'ex_colegas', description: '' });
+    } catch {}
+  };
+
+  const handleDeleteRelationship = async (rId: string, prospectId: string) => {
+    try {
+      await authFetch(`/api/relationships/${rId}`, { method: 'DELETE' });
+      fetchProspectRelationships(prospectId);
+    } catch {}
+  };
+
+  const handleDiscoverRelationships = async () => {
+    const ids = [...selectedIds];
+    if (ids.length < 2) return;
+    setIsDiscoveringRelations(true);
+    setRelationsResult('');
+    try {
+      const res = await authFetch('/api/relationships/discover', {
+        method: 'POST',
+        body: JSON.stringify({ prospectIds: ids }),
+      });
+      const data = await res.json();
+      setRelationsResult(data.message || 'Completado');
+    } catch {
+      setRelationsResult('Error en la detección');
+    } finally {
+      setIsDiscoveringRelations(false);
+    }
+  };
+
+  const handleAssignOrg = async (prospectId: string, organizationId: string | null, orgRole?: string) => {
+    try {
+      await authFetch(`/api/prospects/${prospectId}`, {
+        method: 'PATCH',
+        body: JSON.stringify({ organizationId: organizationId || null, orgRole: orgRole || '' }),
+      });
+      refreshProspects();
+      if (selectedOrg) fetchOrgDetail(selectedOrg.id);
+    } catch {}
+  };
+
+  // Campaign state
+  const [showCampaigns, setShowCampaigns] = useState(false);
+  const [campaigns, setCampaigns] = useState<any[]>([]);
+  const [selectedCampaign, setSelectedCampaign] = useState<any>(null);
+  const [showCampaignModal, setShowCampaignModal] = useState(false);
+  const [campaignForm, setCampaignForm] = useState({ name: '', subject: '', templateBody: '', type: 'email' });
+  const [isPersonalizing, setIsPersonalizing] = useState(false);
+  const [isSendingCampaign, setIsSendingCampaign] = useState(false);
+  const [campaignMessage, setCampaignMessage] = useState('');
+  const [showAddRecipients, setShowAddRecipients] = useState(false);
+  const [testEmail, setTestEmail] = useState('');
+
+  const fetchCampaigns = async () => {
+    try {
+      const res = await authFetch('/api/campaigns');
+      if (res.ok) setCampaigns(await res.json());
+    } catch {}
+  };
+
+  const fetchCampaignDetail = async (id: string) => {
+    try {
+      const res = await authFetch(`/api/campaigns/${id}`);
+      if (res.ok) setSelectedCampaign(await res.json());
+    } catch {}
+  };
+
+  const handleCreateCampaign = async () => {
+    if (!campaignForm.name) return;
+    try {
+      const res = await authFetch('/api/campaigns', { method: 'POST', body: JSON.stringify(campaignForm) });
+      const data = await res.json();
+      if (res.ok) {
+        setShowCampaignModal(false);
+        setCampaignForm({ name: '', subject: '', templateBody: '', type: 'email' });
+        fetchCampaigns();
+        fetchCampaignDetail(data.id);
+      }
+    } catch {}
+  };
+
+  const handleDeleteCampaign = async (id: string) => {
+    if (!confirm('¿Eliminar esta campaña?')) return;
+    try {
+      await authFetch(`/api/campaigns/${id}`, { method: 'DELETE' });
+      setSelectedCampaign(null);
+      fetchCampaigns();
+    } catch {}
+  };
+
+  const handleAddRecipients = async (campaignId: string, prospectIds: string[]) => {
+    try {
+      await authFetch(`/api/campaigns/${campaignId}/recipients`, {
+        method: 'POST',
+        body: JSON.stringify({ prospectIds }),
+      });
+      fetchCampaignDetail(campaignId);
+      fetchCampaigns();
+      setShowAddRecipients(false);
+    } catch {}
+  };
+
+  const handleRemoveRecipient = async (cpId: string) => {
+    if (!selectedCampaign) return;
+    try {
+      await authFetch(`/api/campaign-prospects/${cpId}`, { method: 'DELETE' });
+      fetchCampaignDetail(selectedCampaign.id);
+      fetchCampaigns();
+    } catch {}
+  };
+
+  const handlePersonalizeCampaign = async (id: string) => {
+    setIsPersonalizing(true);
+    setCampaignMessage('');
+    try {
+      const res = await authFetch(`/api/campaigns/${id}/personalize`, { method: 'POST' });
+      const data = await res.json();
+      setCampaignMessage(data.message || 'Completado');
+      fetchCampaignDetail(id);
+    } catch {
+      setCampaignMessage('Error en personalización');
+    } finally {
+      setIsPersonalizing(false);
+    }
+  };
+
+  const handleSendCampaign = async (id: string) => {
+    if (!confirm('¿Enviar esta campaña? Los emails se enviarán a todos los destinatarios pendientes.')) return;
+    setIsSendingCampaign(true);
+    setCampaignMessage('');
+    try {
+      const res = await authFetch(`/api/campaigns/${id}/send`, { method: 'POST' });
+      const data = await res.json();
+      setCampaignMessage(data.message || data.error || 'Completado');
+      fetchCampaignDetail(id);
+      fetchCampaigns();
+    } catch {
+      setCampaignMessage('Error al enviar');
+    } finally {
+      setIsSendingCampaign(false);
+    }
+  };
+
+  const handleTestEmail = async (id: string) => {
+    if (!testEmail) return;
+    try {
+      const res = await authFetch(`/api/campaigns/${id}/test`, { method: 'POST', body: JSON.stringify({ testEmail }) });
+      const data = await res.json();
+      setCampaignMessage(data.message || data.error);
+    } catch {}
+  };
+
+  const handleMarkWaSent = async (cpId: string) => {
+    if (!selectedCampaign) return;
+    try {
+      await authFetch(`/api/campaign-prospects/${cpId}`, { method: 'PATCH', body: JSON.stringify({ status: 'sent' }) });
+      fetchCampaignDetail(selectedCampaign.id);
+    } catch {}
+  };
 
   const isAdmin = authUser?.role === 'admin';
 
@@ -635,7 +964,7 @@ export default function App() {
   };
 
   const startEditing = (prospect: Prospect) => {
-    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source, notes: prospect.notes || '', url: prospect.url || '' });
+    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source, notes: prospect.notes || '', url: prospect.url || '', organizationId: prospect.organizationId || '', orgRole: prospect.orgRole || '' });
     setIsEditing(true);
   };
 
@@ -987,6 +1316,35 @@ export default function App() {
               {!sidebarCollapsed && <span className="text-xs font-medium">{cat === 'All' ? 'Todos los registros' : cat}</span>}
             </button>
           ))}
+
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <button
+              onClick={() => { setShowOrganizations(!showOrganizations); setShowCampaigns(false); if (!showOrganizations) fetchOrganizations(); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-all duration-200 ${
+                showOrganizations
+                ? 'bg-slate-900 text-white font-medium'
+                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+              title="Organizaciones"
+            >
+              <div className="w-5 flex justify-center shrink-0"><Building2 size={18} /></div>
+              {!sidebarCollapsed && <span className="text-xs font-medium">Organizaciones</span>}
+              {!sidebarCollapsed && <span className="text-[10px] font-mono text-slate-400 ml-auto">{organizations.length}</span>}
+            </button>
+            <button
+              onClick={() => { setShowCampaigns(!showCampaigns); setShowOrganizations(false); if (!showCampaigns) fetchCampaigns(); }}
+              className={`w-full flex items-center gap-3 px-3 py-2 rounded transition-all duration-200 ${
+                showCampaigns
+                ? 'bg-slate-900 text-white font-medium'
+                : 'text-slate-500 hover:bg-slate-100 hover:text-slate-900'
+              }`}
+              title="Campañas"
+            >
+              <div className="w-5 flex justify-center shrink-0"><Mail size={18} /></div>
+              {!sidebarCollapsed && <span className="text-xs font-medium">Campañas</span>}
+              {!sidebarCollapsed && <span className="text-[10px] font-mono text-slate-400 ml-auto">{campaigns.length}</span>}
+            </button>
+          </div>
         </div>
 
         <div className="p-4 border-t border-slate-100 space-y-3">
@@ -1056,6 +1414,208 @@ export default function App() {
       </AnimatePresence>
 
       <main className={`p-6 md:p-10 transition-all duration-300 ${sidebarCollapsed ? 'sm:ml-16' : 'sm:ml-64'}`}>
+        {showOrganizations ? (
+          /* ========== Organizations View ========== */
+          <div>
+            <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
+              <div>
+                <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
+                  <span>CRM</span><ChevronRight size={10} /><span>Organizaciones</span>
+                </div>
+                <h1 className="text-4xl font-light text-slate-900 tracking-tight">Organizaciones</h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { setOrgForm({ name: '', type: '', location: '', website: '', phone: '', email: '', notes: '' }); setEditingOrg(false); setShowOrgModal(true); }}
+                  className="btn-primary flex items-center gap-2 text-xs"
+                >
+                  <Plus size={14} /> Nueva organización
+                </button>
+                <button
+                  onClick={handleDetectOrgs}
+                  disabled={isDetectingOrgs}
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  {isDetectingOrgs ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={14} />}
+                  {isDetectingOrgs ? 'Detectando...' : 'Detectar con AI'}
+                </button>
+                <button
+                  onClick={() => setShowOrganizations(false)}
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  <Users size={14} /> Ver prospectos
+                </button>
+              </div>
+            </header>
+
+            {detectOrgResult && (
+              <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-6 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                {detectOrgResult}
+                <button onClick={() => setDetectOrgResult('')} className="ml-2 text-blue-400 hover:text-blue-700"><X size={12} /></button>
+              </motion.div>
+            )}
+
+            <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Organización</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Tipo</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Ubicación</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">Miembros</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {organizations.map(org => (
+                    <tr
+                      key={org.id}
+                      onClick={() => fetchOrgDetail(org.id)}
+                      className="hover:bg-slate-50 transition-colors cursor-pointer group"
+                    >
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-2">
+                          <Building2 size={14} className="text-slate-400 shrink-0" />
+                          <div>
+                            <p className="font-medium text-sm text-slate-900">{org.name}</p>
+                            {org.website && <p className="text-[10px] text-slate-400 font-mono truncate max-w-[200px]">{org.website}</p>}
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <span className="text-xs text-slate-600 capitalize">{org.type || '-'}</span>
+                      </td>
+                      <td className="px-4 py-4">
+                        <div className="flex items-center gap-1.5 text-xs text-slate-500">
+                          <MapPin size={12} className="text-slate-300 shrink-0" />
+                          <span>{org.location || '-'}</span>
+                        </div>
+                      </td>
+                      <td className="px-4 py-4 text-center">
+                        <span className="text-sm font-medium text-slate-900">{org.memberCount || 0}</span>
+                      </td>
+                      <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button
+                            onClick={() => fetchOrgDetail(org.id)}
+                            title="Ver detalle"
+                            className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors"
+                          >
+                            <ExternalLink size={14} />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteOrg(org.id)}
+                            title="Eliminar"
+                            className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {organizations.length === 0 && (
+                <div className="py-20 text-center">
+                  <Building2 size={32} className="mx-auto text-slate-300 mb-3" />
+                  <p className="text-slate-400 text-xs font-medium">No hay organizaciones.</p>
+                  <p className="text-slate-400 text-[10px] mt-1">Crea una manualmente o usa "Detectar con AI" para descubrirlas desde tus prospectos.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : showCampaigns ? (
+          /* ========== Campaigns View ========== */
+          <div>
+            <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
+              <div>
+                <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
+                  <span>CRM</span><ChevronRight size={10} /><span>Campañas</span>
+                </div>
+                <h1 className="text-4xl font-light text-slate-900 tracking-tight">Campañas</h1>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={() => { setCampaignForm({ name: '', subject: '', templateBody: '', type: 'email' }); setShowCampaignModal(true); }}
+                  className="btn-primary flex items-center gap-2 text-xs"
+                >
+                  <Plus size={14} /> Nueva campaña
+                </button>
+                <button
+                  onClick={() => setShowCampaigns(false)}
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  <Users size={14} /> Ver prospectos
+                </button>
+              </div>
+            </header>
+
+            <div className="bg-white border border-slate-200 rounded-lg shadow-sm overflow-hidden">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50 border-b border-slate-200">
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Campaña</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest">Tipo</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">Estado</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">Dest.</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">Enviados</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-center">Abiertos</th>
+                    <th className="px-4 py-4 text-[10px] font-bold text-slate-500 uppercase tracking-widest text-right">Acciones</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {campaigns.map(c => (
+                    <tr
+                      key={c.id}
+                      onClick={() => fetchCampaignDetail(c.id)}
+                      className="hover:bg-slate-50 transition-colors cursor-pointer group"
+                    >
+                      <td className="px-4 py-4">
+                        <div>
+                          <p className="font-medium text-sm text-slate-900">{c.name}</p>
+                          {c.subject && <p className="text-[10px] text-slate-400 truncate max-w-[250px]">{c.subject}</p>}
+                        </div>
+                      </td>
+                      <td className="px-4 py-4">
+                        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded ${c.type === 'whatsapp' ? 'bg-green-100 text-green-700' : 'bg-blue-100 text-blue-700'}`}>
+                          {c.type === 'whatsapp' ? 'WhatsApp' : 'Email'}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-center">
+                        <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded ${
+                          c.status === 'sent' ? 'bg-emerald-100 text-emerald-700' :
+                          c.status === 'sending' ? 'bg-amber-100 text-amber-700' :
+                          c.status === 'paused' ? 'bg-red-100 text-red-700' :
+                          'bg-slate-100 text-slate-500'
+                        }`}>
+                          {c.status === 'draft' ? 'Borrador' : c.status === 'sending' ? 'Enviando' : c.status === 'sent' ? 'Enviada' : c.status === 'paused' ? 'Pausada' : c.status}
+                        </span>
+                      </td>
+                      <td className="px-4 py-4 text-center text-sm text-slate-900">{c.totalRecipients}</td>
+                      <td className="px-4 py-4 text-center text-sm text-slate-900">{c.sentCount}</td>
+                      <td className="px-4 py-4 text-center text-sm text-slate-900">{c.openCount}</td>
+                      <td className="px-4 py-4" onClick={e => e.stopPropagation()}>
+                        <div className="flex items-center justify-end gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                          <button onClick={() => fetchCampaignDetail(c.id)} title="Ver" className="p-1.5 text-slate-400 hover:text-slate-900 hover:bg-slate-100 rounded transition-colors"><ExternalLink size={14} /></button>
+                          <button onClick={() => handleDeleteCampaign(c.id)} title="Eliminar" className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded transition-colors"><Trash2 size={14} /></button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {campaigns.length === 0 && (
+                <div className="py-20 text-center">
+                  <Mail size={32} className="mx-auto text-slate-300 mb-3" />
+                  <p className="text-slate-400 text-xs font-medium">No hay campañas.</p>
+                  <p className="text-slate-400 text-[10px] mt-1">Crea una campaña de email o WhatsApp para contactar a tus prospectos.</p>
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+        <>
         <header className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 mb-12">
           <div>
             <div className="flex items-center gap-2 text-slate-400 text-[10px] font-bold uppercase tracking-[0.2em] mb-2">
@@ -1230,9 +1790,49 @@ export default function App() {
             <button onClick={handleBulkVCF} className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors">
               <Contact size={12} /> Exportar VCF
             </button>
+            <button
+              onClick={() => setShowOrganizations(true)}
+              className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors"
+            >
+              <Building2 size={12} /> Organizaciones
+            </button>
+            {campaigns.length > 0 && (
+              <div className="flex items-center gap-1">
+                <select
+                  className="px-2 py-1.5 bg-white/10 text-white text-xs rounded border border-white/20 focus:outline-none"
+                  defaultValue=""
+                  onChange={e => {
+                    if (e.target.value) {
+                      handleAddRecipients(e.target.value, [...selectedIds]);
+                      e.target.value = '';
+                    }
+                  }}
+                >
+                  <option value="" disabled>+ Campaña</option>
+                  {campaigns.map(c => <option key={c.id} value={c.id} className="text-slate-900">{c.name}</option>)}
+                </select>
+              </div>
+            )}
+            {selectedIds.size >= 2 && (
+              <button
+                onClick={handleDiscoverRelationships}
+                disabled={isDiscoveringRelations}
+                className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors"
+              >
+                {isDiscoveringRelations ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Sparkles size={12} />}
+                {isDiscoveringRelations ? 'Buscando...' : 'Descubrir relaciones'}
+              </button>
+            )}
             <button onClick={() => setSelectedIds(new Set())} className="ml-auto text-xs text-slate-400 hover:text-white transition-colors">
               Deseleccionar
             </button>
+          </motion.div>
+        )}
+
+        {relationsResult && (
+          <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="mb-4 p-3 bg-indigo-50 border border-indigo-200 rounded text-xs text-indigo-700">
+            {relationsResult}
+            <button onClick={() => setRelationsResult('')} className="ml-2 text-indigo-400 hover:text-indigo-700"><X size={12} /></button>
           </motion.div>
         )}
 
@@ -1268,7 +1868,7 @@ export default function App() {
                       initial={{ opacity: 0 }}
                       animate={{ opacity: 1 }}
                       exit={{ opacity: 0 }}
-                      onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); }}
+                      onClick={() => { setSelectedProspect(prospect); setEnrichResult(null); fetchProspectRelationships(prospect.id); }}
                       className="hover:bg-slate-50 transition-colors group cursor-pointer"
                     >
                       <td className="px-2 py-4 text-center" onClick={e => e.stopPropagation()}>
@@ -1510,6 +2110,8 @@ export default function App() {
             ))}
           </div>
         </section>
+        </>
+        )}
       </main>
 
       {/* Discover Modal */}
@@ -1946,6 +2548,19 @@ export default function App() {
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">URL</label>
                     <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.url || ''} onChange={e => setEditForm({...editForm, url: e.target.value})} placeholder="https://..." />
                   </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Organización</label>
+                      <select className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.organizationId || ''} onChange={e => setEditForm({...editForm, organizationId: e.target.value})}>
+                        <option value="">Sin organización</option>
+                        {organizations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Rol en org.</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.orgRole || ''} onChange={e => setEditForm({...editForm, orgRole: e.target.value})} placeholder="Director, socio, empleado..." />
+                    </div>
+                  </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</label>
                     <textarea className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 resize-none" rows={3} value={editForm.notes || ''} onChange={e => setEditForm({...editForm, notes: e.target.value})} placeholder="Observaciones..." />
@@ -2039,12 +2654,113 @@ export default function App() {
                   </div>
                 )}
 
+                {(() => {
+                  const org = organizations.find(o => o.id === selectedProspect.organizationId);
+                  return org ? (
+                    <div className="border-t border-slate-100 pt-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Organización</span>
+                      <button
+                        onClick={() => fetchOrgDetail(org.id)}
+                        className="flex items-center gap-2 text-sm text-slate-900 hover:text-blue-600 transition-colors"
+                      >
+                        <Building2 size={14} className="text-slate-400" />
+                        <span>{org.name}</span>
+                        {selectedProspect.orgRole && <span className="text-[10px] text-slate-400 font-mono">({selectedProspect.orgRole})</span>}
+                      </button>
+                    </div>
+                  ) : null;
+                })()}
+
                 {selectedProspect.notes && (
                   <div className="border-t border-slate-100 pt-4">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</span>
                     <p className="text-xs text-slate-600 whitespace-pre-wrap">{selectedProspect.notes}</p>
                   </div>
                 )}
+
+                {/* Relationships */}
+                <div className="border-t border-slate-100 pt-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Relaciones</span>
+                    <button
+                      onClick={() => setShowAddRelationship(!showAddRelationship)}
+                      className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
+                    >
+                      + Agregar
+                    </button>
+                  </div>
+
+                  {showAddRelationship && (
+                    <div className="bg-slate-50 rounded p-3 mb-3 space-y-2">
+                      <div>
+                        <label className="text-[10px] text-slate-400 block mb-1">Persona relacionada</label>
+                        <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={relationshipForm.prospectId2} onChange={e => setRelationshipForm({...relationshipForm, prospectId2: e.target.value})}>
+                          <option value="">Seleccionar...</option>
+                          {prospects.filter(p => p.id !== selectedProspect.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Tipo</label>
+                          <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={relationshipForm.type} onChange={e => setRelationshipForm({...relationshipForm, type: e.target.value})}>
+                            <option value="ex_colegas">Ex colegas</option>
+                            <option value="familia">Familia</option>
+                            <option value="amigos">Amigos</option>
+                            <option value="misma_asociacion">Misma asociación</option>
+                            <option value="socios">Socios</option>
+                            <option value="compañeros_estudio">Compañeros de estudio</option>
+                            <option value="referido">Referido</option>
+                            <option value="mentor">Mentor</option>
+                          </select>
+                        </div>
+                        <div>
+                          <label className="text-[10px] text-slate-400 block mb-1">Descripción</label>
+                          <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={relationshipForm.description} onChange={e => setRelationshipForm({...relationshipForm, description: e.target.value})} placeholder="Contexto..." />
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <button onClick={() => handleAddRelationship(selectedProspect.id)} className="btn-primary text-[10px] px-3 py-1.5">Agregar</button>
+                        <button onClick={() => setShowAddRelationship(false)} className="text-[10px] text-slate-400 hover:text-slate-900">Cancelar</button>
+                      </div>
+                    </div>
+                  )}
+
+                  {prospectRelationships.length > 0 ? (
+                    <div className="space-y-1.5">
+                      {prospectRelationships.map(r => {
+                        const isFirst = r.prospectId1 === selectedProspect.id;
+                        const otherName = isFirst ? r.name2 : r.name1;
+                        const typeLabels: Record<string, string> = {
+                          ex_colegas: 'Ex colegas', familia: 'Familia', amigos: 'Amigos',
+                          misma_asociacion: 'Misma asociación', socios: 'Socios',
+                          compañeros_estudio: 'Compañeros', referido: 'Referido', mentor: 'Mentor'
+                        };
+                        return (
+                          <div key={r.id} className="flex items-center justify-between p-2 bg-slate-50 rounded group/r">
+                            <div className="flex items-center gap-2 text-xs">
+                              <span className="font-medium text-slate-900">{otherName}</span>
+                              <span className={`text-[9px] px-1.5 py-0.5 rounded bg-indigo-100 text-indigo-700`}>{typeLabels[r.type] || r.type}</span>
+                              {r.description && <span className="text-[10px] text-slate-400">{r.description}</span>}
+                              <span className={`text-[9px] px-1 py-0.5 rounded ${
+                                r.confidence === 'alta' ? 'bg-emerald-100 text-emerald-700' :
+                                r.confidence === 'media' ? 'bg-amber-100 text-amber-700' :
+                                'bg-slate-100 text-slate-500'
+                              }`}>{r.confidence}</span>
+                            </div>
+                            <button
+                              onClick={() => handleDeleteRelationship(r.id, selectedProspect.id)}
+                              className="p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover/r:opacity-100 transition-all"
+                            >
+                              <X size={12} />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-slate-400 italic">Sin relaciones conocidas</p>
+                  )}
+                </div>
 
                 {/* Actions */}
                 <div className="border-t border-slate-100 pt-4 flex gap-2">
@@ -2384,6 +3100,722 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Campaign Detail Modal */}
+      <AnimatePresence>
+        {selectedCampaign && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { setSelectedCampaign(null); setCampaignMessage(''); }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-3xl bg-white border border-slate-900 shadow-2xl p-10 max-h-[85vh] overflow-y-auto"
+            >
+              <button
+                onClick={() => { setSelectedCampaign(null); setCampaignMessage(''); }}
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-900"
+              >
+                <X size={18} />
+              </button>
+
+              <div className="flex items-center gap-3 mb-1">
+                {selectedCampaign.type === 'whatsapp' ? <MessageCircle size={24} className="text-green-500" /> : <Mail size={24} className="text-blue-500" />}
+                <h2 className="text-xl font-medium text-slate-900">{selectedCampaign.name}</h2>
+                <span className={`text-[10px] font-bold uppercase tracking-widest px-2 py-1 rounded ${
+                  selectedCampaign.status === 'sent' ? 'bg-emerald-100 text-emerald-700' :
+                  selectedCampaign.status === 'sending' ? 'bg-amber-100 text-amber-700' :
+                  'bg-slate-100 text-slate-500'
+                }`}>
+                  {selectedCampaign.status === 'draft' ? 'Borrador' : selectedCampaign.status === 'sent' ? 'Enviada' : selectedCampaign.status}
+                </span>
+              </div>
+              {selectedCampaign.subject && <p className="text-xs text-slate-500 mb-4 ml-9">{selectedCampaign.subject}</p>}
+
+              {/* Progress bars */}
+              {selectedCampaign.totalRecipients > 0 && (
+                <div className="grid grid-cols-4 gap-3 mb-6">
+                  {[
+                    { label: 'Enviados', value: selectedCampaign.sentCount, total: selectedCampaign.totalRecipients, color: 'bg-blue-500' },
+                    { label: 'Abiertos', value: selectedCampaign.openCount, total: selectedCampaign.sentCount || 1, color: 'bg-emerald-500' },
+                    { label: 'Clicks', value: selectedCampaign.clickCount, total: selectedCampaign.openCount || 1, color: 'bg-indigo-500' },
+                    { label: 'Desuscritos', value: selectedCampaign.unsubscribeCount, total: selectedCampaign.sentCount || 1, color: 'bg-red-500' },
+                  ].map((s, i) => (
+                    <div key={i} className="bg-slate-50 rounded p-3">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">{s.label}</span>
+                      <span className="text-lg font-light text-slate-900">{s.value}</span>
+                      <div className="w-full bg-slate-200 h-1 rounded-full mt-2 overflow-hidden">
+                        <div className={`${s.color} h-full rounded-full transition-all`} style={{ width: `${Math.min(100, (s.value / s.total) * 100)}%` }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {campaignMessage && (
+                <div className="mb-4 p-3 bg-blue-50 border border-blue-200 rounded text-xs text-blue-700">
+                  {campaignMessage}
+                  <button onClick={() => setCampaignMessage('')} className="ml-2 text-blue-400 hover:text-blue-700"><X size={12} /></button>
+                </div>
+              )}
+
+              {/* Template */}
+              {selectedCampaign.status === 'draft' && (
+                <div className="mb-6 space-y-3">
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Asunto</label>
+                    <input
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                      value={selectedCampaign.subject}
+                      onChange={e => setSelectedCampaign({...selectedCampaign, subject: e.target.value})}
+                      onBlur={() => authFetch(`/api/campaigns/${selectedCampaign.id}`, { method: 'PATCH', body: JSON.stringify({ subject: selectedCampaign.subject }) })}
+                      placeholder="Asunto del email..."
+                    />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">
+                      {selectedCampaign.type === 'whatsapp' ? 'Plantilla del mensaje' : 'Plantilla del email (HTML)'}
+                    </label>
+                    <textarea
+                      className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 resize-none font-mono"
+                      rows={5}
+                      value={selectedCampaign.templateBody}
+                      onChange={e => setSelectedCampaign({...selectedCampaign, templateBody: e.target.value})}
+                      onBlur={() => authFetch(`/api/campaigns/${selectedCampaign.id}`, { method: 'PATCH', body: JSON.stringify({ templateBody: selectedCampaign.templateBody }) })}
+                      placeholder={selectedCampaign.type === 'whatsapp'
+                        ? 'Hola, soy [tu nombre]. Me gustaría...'
+                        : '<p>Estimado(a) prospecto,</p><p>...</p>'}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Actions */}
+              <div className="flex flex-wrap gap-2 mb-6">
+                <button
+                  onClick={() => setShowAddRecipients(!showAddRecipients)}
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  <UserPlus size={14} /> Agregar destinatarios
+                </button>
+                <button
+                  onClick={() => handlePersonalizeCampaign(selectedCampaign.id)}
+                  disabled={isPersonalizing || selectedCampaign.totalRecipients === 0}
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  {isPersonalizing ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={14} />}
+                  {isPersonalizing ? 'Personalizando...' : 'Personalizar con AI'}
+                </button>
+                {selectedCampaign.type === 'email' && (
+                  <>
+                    <div className="flex items-center gap-1">
+                      <input
+                        className="px-2 py-1.5 border border-slate-200 rounded text-xs w-40 focus:outline-none focus:border-slate-900"
+                        placeholder="email@test.com"
+                        value={testEmail}
+                        onChange={e => setTestEmail(e.target.value)}
+                      />
+                      <button onClick={() => handleTestEmail(selectedCampaign.id)} className="btn-secondary text-xs px-2 py-1.5">Test</button>
+                    </div>
+                    <button
+                      onClick={() => handleSendCampaign(selectedCampaign.id)}
+                      disabled={isSendingCampaign || selectedCampaign.totalRecipients === 0}
+                      className="btn-primary flex items-center gap-2 text-xs bg-blue-600 hover:bg-blue-700 border-blue-600"
+                    >
+                      {isSendingCampaign ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <Send size={14} />}
+                      {isSendingCampaign ? 'Enviando...' : 'Enviar campaña'}
+                    </button>
+                  </>
+                )}
+                <button
+                  onClick={() => handleDeleteCampaign(selectedCampaign.id)}
+                  className="text-xs px-3 py-2 border border-red-200 text-red-500 hover:bg-red-50 rounded transition-colors ml-auto"
+                >
+                  <Trash2 size={14} />
+                </button>
+              </div>
+
+              {/* Add recipients panel */}
+              {showAddRecipients && (
+                <div className="mb-6 bg-slate-50 border border-slate-200 rounded p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Seleccionar prospectos</span>
+                    <button onClick={() => setShowAddRecipients(false)} className="text-slate-400 hover:text-slate-900"><X size={14} /></button>
+                  </div>
+                  <div className="max-h-48 overflow-y-auto space-y-1">
+                    {prospects.map(p => {
+                      const alreadyAdded = selectedCampaign.recipients?.some((r: any) => r.prospectId === p.id);
+                      return (
+                        <div
+                          key={p.id}
+                          onClick={() => !alreadyAdded && handleAddRecipients(selectedCampaign.id, [p.id])}
+                          className={`flex items-center justify-between p-2 rounded text-xs cursor-pointer transition-colors ${alreadyAdded ? 'bg-slate-200 text-slate-400 cursor-not-allowed' : 'hover:bg-white'}`}
+                        >
+                          <div>
+                            <span className="font-medium">{p.name}</span>
+                            <span className="text-slate-400 ml-2">{p.email || 'sin email'}</span>
+                          </div>
+                          {alreadyAdded ? <span className="text-[10px]">Ya agregado</span> : <Plus size={12} className="text-slate-400" />}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {selectedIds.size > 0 && (
+                    <button
+                      onClick={() => handleAddRecipients(selectedCampaign.id, [...selectedIds])}
+                      className="mt-3 btn-primary text-xs w-full"
+                    >
+                      Agregar {selectedIds.size} seleccionado(s)
+                    </button>
+                  )}
+                </div>
+              )}
+
+              {/* Recipients list */}
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                  Destinatarios ({selectedCampaign.recipients?.length || 0})
+                </span>
+                {selectedCampaign.recipients && selectedCampaign.recipients.length > 0 ? (
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {selectedCampaign.recipients.map((r: any) => (
+                      <div key={r.id} className="flex items-center justify-between p-3 bg-slate-50 rounded group/cp">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                          <div className={`w-2.5 h-2.5 rounded-full shrink-0 ${
+                            r.status === 'sent' || r.status === 'delivered' ? 'bg-blue-400' :
+                            r.status === 'opened' ? 'bg-emerald-400' :
+                            r.status === 'clicked' ? 'bg-indigo-400' :
+                            r.status === 'bounced' || r.status === 'unsubscribed' ? 'bg-red-400' :
+                            'bg-slate-300'
+                          }`} title={r.status} />
+                          <div className="min-w-0">
+                            <p className="text-sm font-medium text-slate-900 truncate">{r.name}</p>
+                            <p className="text-[10px] text-slate-400 truncate">{r.prospectEmail || 'sin email'}</p>
+                          </div>
+                          {r.personalizedBody && (
+                            <span className="text-[9px] px-1.5 py-0.5 bg-indigo-100 text-indigo-600 rounded shrink-0">Personalizado</span>
+                          )}
+                          <span className={`text-[9px] px-1.5 py-0.5 rounded shrink-0 ${
+                            r.status === 'pending' ? 'bg-slate-100 text-slate-500' :
+                            r.status === 'sent' || r.status === 'delivered' ? 'bg-blue-100 text-blue-600' :
+                            r.status === 'opened' ? 'bg-emerald-100 text-emerald-600' :
+                            r.status === 'clicked' ? 'bg-indigo-100 text-indigo-600' :
+                            'bg-red-100 text-red-600'
+                          }`}>{r.status}</span>
+                        </div>
+                        <div className="flex items-center gap-1 shrink-0 ml-2">
+                          {selectedCampaign.type === 'whatsapp' && r.contact && (
+                            <>
+                              <button
+                                onClick={() => {
+                                  const phone = (r.contact || '').replace(/[\s\-().+]/g, '').replace(/^52/, '');
+                                  const msg = r.personalizedBody || selectedCampaign.templateBody || '';
+                                  window.open(`https://wa.me/52${phone}?text=${encodeURIComponent(msg)}`, '_blank');
+                                }}
+                                className="p-1.5 text-green-500 hover:bg-green-50 rounded transition-colors"
+                                title="Abrir WhatsApp"
+                              >
+                                <MessageCircle size={14} />
+                              </button>
+                              {r.status === 'pending' && (
+                                <button
+                                  onClick={() => handleMarkWaSent(r.id)}
+                                  className="p-1.5 text-slate-400 hover:text-blue-500 hover:bg-blue-50 rounded transition-colors"
+                                  title="Marcar como enviado"
+                                >
+                                  <CheckCircle size={14} />
+                                </button>
+                              )}
+                            </>
+                          )}
+                          <button
+                            onClick={() => handleRemoveRecipient(r.id)}
+                            className="p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover/cp:opacity-100 transition-all"
+                          >
+                            <X size={12} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-xs text-slate-400 italic">Sin destinatarios. Agrega prospectos a esta campaña.</p>
+                )}
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Create Campaign Modal */}
+      <AnimatePresence>
+        {showCampaignModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowCampaignModal(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-xl bg-white border border-slate-900 shadow-2xl p-10"
+            >
+              <h2 className="text-2xl font-light text-slate-900 mb-8 border-b border-slate-100 pb-6">Nueva Campaña</h2>
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre de la campaña</label>
+                  <input
+                    autoFocus
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                    value={campaignForm.name}
+                    onChange={e => setCampaignForm({...campaignForm, name: e.target.value})}
+                    placeholder="Ej. Bienvenida doctores CDMX"
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Tipo</label>
+                  <div className="flex gap-3">
+                    <button
+                      onClick={() => setCampaignForm({...campaignForm, type: 'email'})}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 border text-xs font-medium transition-all ${
+                        campaignForm.type === 'email' ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                      }`}
+                    >
+                      <Mail size={16} /> Email (Brevo)
+                    </button>
+                    <button
+                      onClick={() => setCampaignForm({...campaignForm, type: 'whatsapp'})}
+                      className={`flex-1 flex items-center justify-center gap-2 px-4 py-3 border text-xs font-medium transition-all ${
+                        campaignForm.type === 'whatsapp' ? 'bg-green-600 text-white border-green-600' : 'bg-white text-slate-500 border-slate-200 hover:border-slate-400'
+                      }`}
+                    >
+                      <MessageCircle size={16} /> WhatsApp
+                    </button>
+                  </div>
+                </div>
+                {campaignForm.type === 'email' && (
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Asunto</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={campaignForm.subject}
+                      onChange={e => setCampaignForm({...campaignForm, subject: e.target.value})}
+                      placeholder="Asunto del email"
+                    />
+                  </div>
+                )}
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
+                    Plantilla del mensaje
+                  </label>
+                  <textarea
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm resize-none"
+                    rows={4}
+                    value={campaignForm.templateBody}
+                    onChange={e => setCampaignForm({...campaignForm, templateBody: e.target.value})}
+                    placeholder={campaignForm.type === 'whatsapp'
+                      ? 'Hola, soy [nombre]. Me gustaría presentarle nuestros servicios...'
+                      : '<p>Estimado(a),</p><p>Le contacto para...</p>'}
+                  />
+                  <p className="text-[10px] text-slate-400 mt-1">La AI personalizará este mensaje para cada prospecto.</p>
+                </div>
+              </div>
+              <div className="mt-12 flex items-center justify-between">
+                <button onClick={() => setShowCampaignModal(false)} className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors">Cancelar</button>
+                <button onClick={handleCreateCampaign} className="btn-primary text-xs">Crear Campaña</button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Organization Detail Modal */}
+      <AnimatePresence>
+        {selectedOrg && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => { setSelectedOrg(null); setEditingOrg(false); }}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-2xl bg-white border border-slate-900 shadow-2xl p-10 max-h-[85vh] overflow-y-auto"
+            >
+              <button
+                onClick={() => { setSelectedOrg(null); setEditingOrg(false); }}
+                className="absolute top-4 right-4 text-slate-400 hover:text-slate-900"
+              >
+                <X size={18} />
+              </button>
+
+              {editingOrg ? (
+                <div className="space-y-4">
+                  <h2 className="text-xl font-medium text-slate-900 mb-4">Editar Organización</h2>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Nombre</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.name || ''} onChange={e => setOrgForm({...orgForm, name: e.target.value})} />
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Tipo</label>
+                      <select className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.type || ''} onChange={e => setOrgForm({...orgForm, type: e.target.value})}>
+                        <option value="">Sin especificar</option>
+                        <option value="hospital">Hospital</option>
+                        <option value="clinica">Clínica</option>
+                        <option value="despacho">Despacho</option>
+                        <option value="empresa">Empresa</option>
+                        <option value="asociacion">Asociación</option>
+                        <option value="gobierno">Gobierno</option>
+                        <option value="universidad">Universidad</option>
+                        <option value="otro">Otro</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Ubicación</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.location || ''} onChange={e => setOrgForm({...orgForm, location: e.target.value})} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.phone || ''} onChange={e => setOrgForm({...orgForm, phone: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.email || ''} onChange={e => setOrgForm({...orgForm, email: e.target.value})} />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Sitio web</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={orgForm.website || ''} onChange={e => setOrgForm({...orgForm, website: e.target.value})} placeholder="https://..." />
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</label>
+                    <textarea className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 resize-none" rows={2} value={orgForm.notes || ''} onChange={e => setOrgForm({...orgForm, notes: e.target.value})} />
+                  </div>
+                  <div className="flex gap-2 pt-4 border-t border-slate-100">
+                    <button onClick={handleSaveOrg} className="btn-primary flex-1 text-xs">Guardar</button>
+                    <button onClick={() => setEditingOrg(false)} className="btn-secondary flex-1 text-xs">Cancelar</button>
+                  </div>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-3 mb-1">
+                    <Building2 size={24} className="text-slate-400" />
+                    <h2 className="text-xl font-medium text-slate-900">{selectedOrg.name}</h2>
+                  </div>
+                  {selectedOrg.type && <p className="text-xs text-slate-500 capitalize mb-6 ml-9">{selectedOrg.type}</p>}
+
+                  <div className="space-y-4">
+                    <div className="grid grid-cols-2 gap-4">
+                      {selectedOrg.location && (
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Ubicación</span>
+                          <span className="text-sm text-slate-900">{selectedOrg.location}</span>
+                        </div>
+                      )}
+                      {selectedOrg.website && (
+                        <div>
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Sitio web</span>
+                          <a href={selectedOrg.website} target="_blank" rel="noopener noreferrer" className="text-sm text-blue-500 hover:underline">{selectedOrg.website}</a>
+                        </div>
+                      )}
+                    </div>
+                    {(selectedOrg.phone || selectedOrg.email) && (
+                      <div className="grid grid-cols-2 gap-4 border-t border-slate-100 pt-4">
+                        {selectedOrg.phone && (
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono</span>
+                            <span className="text-sm text-slate-900">{selectedOrg.phone}</span>
+                          </div>
+                        )}
+                        {selectedOrg.email && (
+                          <div>
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email</span>
+                            <span className="text-sm text-slate-900">{selectedOrg.email}</span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {selectedOrg.notes && (
+                      <div className="border-t border-slate-100 pt-4">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</span>
+                        <p className="text-xs text-slate-600 whitespace-pre-wrap">{selectedOrg.notes}</p>
+                      </div>
+                    )}
+
+                    {/* Members */}
+                    <div className="border-t border-slate-100 pt-4">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
+                        Miembros ({selectedOrg.members?.length || 0})
+                      </span>
+                      {selectedOrg.members && selectedOrg.members.length > 0 ? (
+                        <div className="space-y-2">
+                          {selectedOrg.members.map(m => (
+                            <div
+                              key={m.id}
+                              onClick={() => { setSelectedProspect(m); setEnrichResult(null); }}
+                              className="flex items-center justify-between p-3 bg-slate-50 rounded hover:bg-slate-100 cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <div className={`w-2.5 h-2.5 rounded-full ${
+                                  m.contactQuality === 'qualified' ? 'bg-blue-500' :
+                                  m.contactQuality === 'direct' ? 'bg-emerald-400' :
+                                  m.contactQuality === 'generic' ? 'bg-amber-400' :
+                                  m.contactQuality === 'disqualified' ? 'bg-red-400' :
+                                  'bg-slate-300'
+                                }`} />
+                                <div>
+                                  <p className="text-sm font-medium text-slate-900">{m.name}</p>
+                                  <p className="text-[10px] text-slate-400">{m.specialty}</p>
+                                </div>
+                              </div>
+                              {m.orgRole && (
+                                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest px-2 py-1 bg-white rounded border border-slate-200">
+                                  {m.orgRole}
+                                </span>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">Sin miembros asignados</p>
+                      )}
+                    </div>
+
+                    {/* Hierarchy */}
+                    {selectedOrg.members && selectedOrg.members.length >= 2 && (
+                      <div className="border-t border-slate-100 pt-4">
+                        <div className="flex items-center justify-between mb-3">
+                          <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">Jerarquía</span>
+                          <div className="flex items-center gap-2">
+                            <button
+                              onClick={() => setShowAddHierarchy(!showAddHierarchy)}
+                              className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
+                            >
+                              + Manual
+                            </button>
+                            <button
+                              onClick={() => handleDiscoverHierarchy(selectedOrg.id)}
+                              disabled={isDiscoveringHierarchy}
+                              className="text-[10px] font-bold text-blue-500 hover:text-blue-700 uppercase tracking-widest transition-colors flex items-center gap-1"
+                            >
+                              {isDiscoveringHierarchy ? <div className="w-2 h-2 border border-blue-500 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={10} />}
+                              Descubrir
+                            </button>
+                          </div>
+                        </div>
+
+                        {hierarchyResult && (
+                          <p className="text-[10px] text-blue-600 mb-2">{hierarchyResult}</p>
+                        )}
+
+                        {showAddHierarchy && (
+                          <div className="bg-slate-50 rounded p-3 mb-3 space-y-2">
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-1">Superior</label>
+                                <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={hierarchyForm.superiorId} onChange={e => setHierarchyForm({...hierarchyForm, superiorId: e.target.value})}>
+                                  <option value="">Seleccionar...</option>
+                                  {selectedOrg.members?.map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                </select>
+                              </div>
+                              <div>
+                                <label className="text-[10px] text-slate-400 block mb-1">Subordinado</label>
+                                <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={hierarchyForm.subordinateId} onChange={e => setHierarchyForm({...hierarchyForm, subordinateId: e.target.value})}>
+                                  <option value="">Seleccionar...</option>
+                                  {selectedOrg.members?.filter(m => m.id !== hierarchyForm.superiorId).map(m => <option key={m.id} value={m.id}>{m.name}</option>)}
+                                </select>
+                              </div>
+                            </div>
+                            <div className="flex items-center gap-2">
+                              <select className="px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={hierarchyForm.relationshipType} onChange={e => setHierarchyForm({...hierarchyForm, relationshipType: e.target.value})}>
+                                <option value="reports_to">Reporta a</option>
+                                <option value="mentors">Mentora a</option>
+                                <option value="assists">Asiste a</option>
+                              </select>
+                              <button onClick={() => handleAddHierarchy(selectedOrg.id)} className="btn-primary text-[10px] px-3 py-1.5">Agregar</button>
+                              <button onClick={() => setShowAddHierarchy(false)} className="text-[10px] text-slate-400 hover:text-slate-900">Cancelar</button>
+                            </div>
+                          </div>
+                        )}
+
+                        {orgHierarchy.length > 0 ? (
+                          <div className="space-y-1.5">
+                            {orgHierarchy.map(h => (
+                              <div key={h.id} className="flex items-center justify-between p-2 bg-slate-50 rounded group/h">
+                                <div className="flex items-center gap-2 text-xs">
+                                  <span className="font-medium text-slate-900">{h.superiorName}</span>
+                                  <span className="text-slate-400">→</span>
+                                  <span className="text-slate-600">{h.subordinateName}</span>
+                                  <span className={`text-[9px] px-1.5 py-0.5 rounded ${
+                                    h.confidence === 'alta' ? 'bg-emerald-100 text-emerald-700' :
+                                    h.confidence === 'media' ? 'bg-amber-100 text-amber-700' :
+                                    'bg-slate-100 text-slate-500'
+                                  }`}>{h.confidence}</span>
+                                </div>
+                                <button
+                                  onClick={() => handleDeleteHierarchy(h.id, selectedOrg.id)}
+                                  className="p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover/h:opacity-100 transition-all"
+                                >
+                                  <X size={12} />
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-xs text-slate-400 italic">Sin jerarquía definida</p>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Actions */}
+                    <div className="border-t border-slate-100 pt-4 flex gap-2">
+                      <button
+                        onClick={() => {
+                          setOrgForm({ name: selectedOrg.name, type: selectedOrg.type, location: selectedOrg.location, website: selectedOrg.website, phone: selectedOrg.phone, email: selectedOrg.email, notes: selectedOrg.notes });
+                          setEditingOrg(true);
+                        }}
+                        className="btn-secondary flex-1 flex items-center justify-center gap-2 text-xs"
+                      >
+                        <ExternalLink size={14} /> Editar
+                      </button>
+                      <button
+                        onClick={() => handleDeleteOrg(selectedOrg.id)}
+                        className="flex items-center justify-center gap-2 text-xs px-3 py-2 border border-red-200 text-red-500 hover:bg-red-50 rounded transition-colors"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </>
+              )}
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Create Organization Modal */}
+      <AnimatePresence>
+        {showOrgModal && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setShowOrgModal(false)}
+              className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ scale: 0.98, opacity: 0 }}
+              animate={{ scale: 1, opacity: 1 }}
+              exit={{ scale: 0.98, opacity: 0 }}
+              className="relative w-full max-w-xl bg-white border border-slate-900 shadow-2xl p-10"
+            >
+              <h2 className="text-2xl font-light text-slate-900 mb-8 border-b border-slate-100 pb-6">Nueva Organización</h2>
+              <div className="space-y-6">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Nombre</label>
+                  <input
+                    autoFocus
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                    value={orgForm.name || ''}
+                    onChange={e => setOrgForm({...orgForm, name: e.target.value})}
+                    placeholder="Nombre de la organización"
+                  />
+                </div>
+                <div className="grid grid-cols-2 gap-8">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Tipo</label>
+                    <select
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-xs"
+                      value={orgForm.type || ''}
+                      onChange={e => setOrgForm({...orgForm, type: e.target.value})}
+                    >
+                      <option value="">Sin especificar</option>
+                      <option value="hospital">Hospital</option>
+                      <option value="clinica">Clínica</option>
+                      <option value="despacho">Despacho</option>
+                      <option value="empresa">Empresa</option>
+                      <option value="asociacion">Asociación</option>
+                      <option value="gobierno">Gobierno</option>
+                      <option value="universidad">Universidad</option>
+                      <option value="otro">Otro</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Ubicación</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={orgForm.location || ''}
+                      onChange={e => setOrgForm({...orgForm, location: e.target.value})}
+                      placeholder="Ciudad o zona"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-8">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Teléfono</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={orgForm.phone || ''}
+                      onChange={e => setOrgForm({...orgForm, phone: e.target.value})}
+                      placeholder="+52 ..."
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Email</label>
+                    <input
+                      className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                      value={orgForm.email || ''}
+                      onChange={e => setOrgForm({...orgForm, email: e.target.value})}
+                      placeholder="contacto@org.com"
+                    />
+                  </div>
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Sitio web</label>
+                  <input
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm"
+                    value={orgForm.website || ''}
+                    onChange={e => setOrgForm({...orgForm, website: e.target.value})}
+                    placeholder="https://..."
+                  />
+                </div>
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Notas</label>
+                  <textarea
+                    className="w-full px-0 py-2 bg-transparent border-b border-slate-200 focus:outline-none focus:border-slate-900 text-sm resize-none"
+                    rows={2}
+                    value={orgForm.notes || ''}
+                    onChange={e => setOrgForm({...orgForm, notes: e.target.value})}
+                    placeholder="Observaciones..."
+                  />
+                </div>
+              </div>
+              <div className="mt-12 flex items-center justify-between">
+                <button onClick={() => setShowOrgModal(false)} className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors">Cancelar</button>
+                <button onClick={handleSaveOrg} className="btn-primary text-xs">Crear Organización</button>
+              </div>
             </motion.div>
           </div>
         )}
