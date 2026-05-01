@@ -804,14 +804,8 @@ export default function App() {
     };
 
     const rows: any[][] = [];
-    let currentCategory = '';
 
     for (const p of sorted) {
-      if (p.category !== currentCategory) {
-        currentCategory = p.category;
-        // Category group header row
-        rows.push([currentCategory, '', '', '', '', '', '', '']);
-      }
       const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
       rows.push([
         p.name,
@@ -820,7 +814,7 @@ export default function App() {
         p.contact,
         p.email || '',
         p.category,
-        q === 'qualified' ? '★ Calificado' : q === 'direct' ? '● Directo' : q === 'generic' ? '◐ Genérico' : q === 'disqualified' ? '✗ Descalificado' : '○ Pendiente',
+        q === 'qualified' ? 'Calificado' : q === 'direct' ? 'Directo' : q === 'generic' ? 'Genérico' : q === 'disqualified' ? 'Descalificado' : 'Pendiente',
         p.source,
       ]);
     }
@@ -833,23 +827,8 @@ export default function App() {
       if (cell) cell.s = headerStyle;
     }
 
-    // Style category group rows and data cells
-    let rowIdx = 1;
-    currentCategory = '';
-    for (const p of sorted) {
-      if (p.category !== currentCategory) {
-        currentCategory = p.category;
-        // Style category row - merge across all columns
-        for (let c = 0; c < headers.length; c++) {
-          const cell = worksheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
-          if (cell) cell.s = categoryStyle;
-        }
-        // Merge category row
-        if (!worksheet['!merges']) worksheet['!merges'] = [];
-        worksheet['!merges'].push({ s: { r: rowIdx, c: 0 }, e: { r: rowIdx, c: headers.length - 1 } });
-        rowIdx++;
-      }
-      // Style data cells
+    // Style data cells
+    for (let rowIdx = 1; rowIdx <= rows.length; rowIdx++) {
       for (let c = 0; c < headers.length; c++) {
         const cell = worksheet[XLSX.utils.encode_cell({ r: rowIdx, c })];
         if (cell) cell.s = cellBorder;
@@ -860,16 +839,18 @@ export default function App() {
         const q = (qCell.v as string) || '';
         qCell.s = {
           ...cellBorder,
-          font: { color: { rgb: q.includes('Calificado') ? '2563EB' : q.includes('Directo') ? '16A34A' : q.includes('Genérico') ? 'D97706' : q.includes('Descalificado') ? 'DC2626' : '94A3B8' }, bold: true, sz: 10 },
+          font: { color: { rgb: q === 'Calificado' ? '2563EB' : q === 'Directo' ? '16A34A' : q === 'Genérico' ? 'D97706' : q === 'Descalificado' ? 'DC2626' : '94A3B8' }, bold: true, sz: 10 },
         };
       }
-      rowIdx++;
     }
 
     worksheet['!cols'] = [
       { wch: 32 }, { wch: 30 }, { wch: 25 }, { wch: 18 }, { wch: 28 }, { wch: 15 }, { wch: 14 }, { wch: 35 },
     ];
     worksheet['!rows'] = [{ hpx: 28 }]; // Header row height
+
+    // AutoFilter on header row
+    worksheet['!autofilter'] = { ref: `A1:H${rows.length + 1}` };
 
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, worksheet, 'Prospectos');
