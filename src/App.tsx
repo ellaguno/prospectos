@@ -704,14 +704,20 @@ export default function App() {
       if (data.leads) {
         const mappedLeads = data.leads.map((l: any) => {
           let category: Prospect['category'] = 'Otros';
-          const lowerLeadsCat = (l.category || '').toLowerCase();
-          const combined = (selectedRoles.join(' ') + ' ' + lowerLeadsCat + ' ' + (l.specialty || '')).toLowerCase();
+          const combined = ((l.name || '') + ' ' + (l.specialty || '') + ' ' + (l.category || '')).toLowerCase();
+          // Check specialty/name first (more specific), then fall back to selectedRoles
+          const rolesLower = selectedRoles.join(' ').toLowerCase();
 
-          if (combined.includes('doctor') || combined.includes('salud') || combined.includes('dentista') || combined.includes('clínica')) category = 'Salud';
-          else if (combined.includes('abogado') || combined.includes('legal') || combined.includes('notario')) category = 'Legal';
-          else if (combined.includes('invers') || combined.includes('empresario') || combined.includes('dueño') || combined.includes('socio')) category = 'Inversión';
-          else if (combined.includes('arq') || combined.includes('ing') || combined.includes('const') || combined.includes('civil')) category = 'Arquitectura';
+          if (combined.includes('doctor') || combined.includes('médic') || combined.includes('medic') || combined.includes('dentista') || combined.includes('clínica') || combined.includes('clinica') || combined.includes('hospital') || combined.includes('ciruj') || combined.includes('salud')) category = 'Salud';
+          else if (combined.includes('abogado') || combined.includes('legal') || combined.includes('notario') || combined.includes('jurídic')) category = 'Legal';
+          else if (combined.includes('inversionista') || combined.includes('empresario') || combined.includes('dueño') || combined.includes('socio')) category = 'Inversión';
+          else if (combined.includes('arquitect') || combined.includes('ingenier') || combined.includes('construcción') || combined.includes('civil')) category = 'Arquitectura';
           else if (combined.includes('profesional') || combined.includes('especialista') || combined.includes('consult')) category = 'Profesionales';
+          // If no match from content, infer from selected roles
+          else if (rolesLower.includes('doctor')) category = 'Salud';
+          else if (rolesLower.includes('abogado') || rolesLower.includes('notario')) category = 'Legal';
+          else if (rolesLower.includes('inversionista') || rolesLower.includes('empresario')) category = 'Inversión';
+          else if (rolesLower.includes('arquitect') || rolesLower.includes('ingenier')) category = 'Arquitectura';
 
           return { ...l, category };
         });
@@ -742,11 +748,12 @@ export default function App() {
         const mappedLeads = data.leads.map((l: any) => {
           let category: Prospect['category'] = (activeCategory === 'All' ? 'Otros' : activeCategory) as any;
 
-          const combined = ((l.specialty || '') + ' ' + (l.category || '')).toLowerCase();
-          if (combined.includes('doctor') || combined.includes('dentista')) category = 'Salud';
-          if (combined.includes('abogado') || combined.includes('notario')) category = 'Legal';
-          if (combined.includes('invers') || combined.includes('dueño')) category = 'Inversión';
-          if (combined.includes('arq') || combined.includes('ing')) category = 'Arquitectura';
+          const combined = ((l.specialty || '') + ' ' + (l.name || '') + ' ' + (l.category || '')).toLowerCase();
+          if (combined.includes('doctor') || combined.includes('médic') || combined.includes('medic') || combined.includes('dentista') || combined.includes('clínica') || combined.includes('clinica') || combined.includes('hospital') || combined.includes('ciruj')) category = 'Salud';
+          else if (combined.includes('abogado') || combined.includes('legal') || combined.includes('notario') || combined.includes('jurídic')) category = 'Legal';
+          else if (combined.includes('invers') || combined.includes('empresario') || combined.includes('dueño') || combined.includes('socio')) category = 'Inversión';
+          else if (combined.includes('arq') || combined.includes('ingenier') || combined.includes('const') || combined.includes('civil')) category = 'Arquitectura';
+          else if (combined.includes('profesional') || combined.includes('especialista') || combined.includes('consult')) category = 'Profesionales';
 
           return { ...l, category };
         });
@@ -1294,7 +1301,7 @@ export default function App() {
                             <p className="font-medium text-sm text-slate-900">{prospect.name}</p>
                             {prospect.notes && <StickyNote size={10} className="text-amber-400 shrink-0" title={prospect.notes} />}
                           </div>
-                          <div className="flex items-center gap-1.5 mt-1">
+                          <div className="flex items-center gap-1.5 mt-1" onClick={e => e.stopPropagation()}>
                             <div className={`w-1.5 h-1.5 rounded-full ${
                               prospect.category === 'Salud' ? 'bg-rose-400' :
                               prospect.category === 'Legal' ? 'bg-amber-400' :
@@ -1302,7 +1309,23 @@ export default function App() {
                               prospect.category === 'Arquitectura' ? 'bg-emerald-400' :
                               'bg-slate-300'
                             }`} />
-                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter">{prospect.category}</span>
+                            <select
+                              value={prospect.category}
+                              onChange={e => {
+                                authFetch(`/api/prospects/${prospect.id}`, {
+                                  method: 'PATCH',
+                                  body: JSON.stringify({ category: e.target.value }),
+                                }).then(() => refreshProspects());
+                              }}
+                              className="text-[10px] font-bold text-slate-400 uppercase tracking-tighter bg-transparent border-none cursor-pointer focus:outline-none hover:text-slate-900 transition-colors p-0"
+                            >
+                              <option value="Salud">Salud</option>
+                              <option value="Legal">Legal</option>
+                              <option value="Inversión">Inversión</option>
+                              <option value="Arquitectura">Arquitectura</option>
+                              <option value="Profesionales">Profesionales</option>
+                              <option value="Otros">Otros</option>
+                            </select>
                           </div>
                         </div>
                       </td>
