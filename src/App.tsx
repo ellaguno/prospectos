@@ -197,7 +197,10 @@ export default function App() {
   const [totalProspects, setTotalProspects] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const PAGE_SIZE = 50;
+  const [pageSize, setPageSize] = useState(() => {
+    const saved = localStorage.getItem('prospectos_page_size');
+    return saved ? parseInt(saved) : 50;
+  });
   const [searchTerm, setSearchTerm] = useState('');
   const [searchInput, setSearchInput] = useState('');
   const searchTimeout = useRef<ReturnType<typeof setTimeout>>();
@@ -299,12 +302,12 @@ export default function App() {
   };
 
   // Centralized fetch with pagination, search, category, sort
-  const refreshProspects = async (opts?: { page?: number; all?: boolean }) => {
+  const refreshProspects = async (opts?: { page?: number; all?: boolean; limit?: number }) => {
     try {
       const page = opts?.page ?? currentPage;
       const params = new URLSearchParams();
       params.set('page', String(page));
-      params.set('limit', String(PAGE_SIZE));
+      params.set('limit', String(opts?.limit ?? pageSize));
       if (searchTerm) params.set('search', searchTerm);
       if (activeCategory && activeCategory !== 'All') params.set('category', activeCategory);
       params.set('sort', sortBy);
@@ -1420,11 +1423,29 @@ export default function App() {
           </div>
 
           {/* Pagination */}
-          {totalPages > 1 && (
-            <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200">
+          <div className="flex items-center justify-between px-4 py-3 border-t border-slate-200">
+            <div className="flex items-center gap-3">
               <span className="text-xs text-slate-500">
-                {((currentPage - 1) * PAGE_SIZE) + 1}–{Math.min(currentPage * PAGE_SIZE, totalProspects)} de {totalProspects}
+                {totalProspects > 0 ? `${((currentPage - 1) * pageSize) + 1}–${Math.min(currentPage * pageSize, totalProspects)} de ${totalProspects}` : '0 registros'}
               </span>
+              <select
+                value={pageSize}
+                onChange={e => {
+                  const newSize = parseInt(e.target.value);
+                  setPageSize(newSize);
+                  localStorage.setItem('prospectos_page_size', String(newSize));
+                  setCurrentPage(1);
+                  refreshProspects({ page: 1, limit: newSize });
+                }}
+                className="px-2 py-1 text-[10px] border border-slate-200 rounded bg-white text-slate-600 focus:outline-none focus:border-slate-900"
+              >
+                <option value={15}>15 por página</option>
+                <option value={50}>50 por página</option>
+                <option value={100}>100 por página</option>
+                <option value={200}>200 por página</option>
+              </select>
+            </div>
+            {totalPages > 1 && (
               <div className="flex items-center gap-1">
                 <button
                   disabled={currentPage <= 1}
@@ -1464,8 +1485,8 @@ export default function App() {
                   Siguiente
                 </button>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
         {/* Resources Grid */}
