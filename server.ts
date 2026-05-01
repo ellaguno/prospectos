@@ -185,6 +185,18 @@ try { db.exec(`ALTER TABLE users ADD COLUMN role TEXT DEFAULT 'user'`); } catch 
 // Ensure admin has admin role
 try { db.prepare("UPDATE users SET role = 'admin' WHERE id = 'admin'").run(); } catch {};
 
+// --- Continuous jobs table ---
+db.exec(`CREATE TABLE IF NOT EXISTS continuous_jobs (
+  userId TEXT PRIMARY KEY,
+  active INTEGER DEFAULT 0,
+  categories TEXT DEFAULT '[]',
+  location TEXT DEFAULT '',
+  sources TEXT DEFAULT '[]',
+  rounds INTEGER DEFAULT 0,
+  lastActivity DATETIME,
+  startedAt DATETIME
+)`);
+
 // Seed default admin user if no users exist
 const userCount = (db.prepare("SELECT COUNT(*) as count FROM users").get() as any).count;
 if (userCount === 0) {
@@ -950,47 +962,37 @@ Responde ÚNICAMENTE con JSON válido:
     }
   });
 
-  // --- Continuous Discovery SSE ---
-  const continuousJobs = new Map<string, { active: boolean }>();
+  // --- Continuous Discovery (persistent) ---
+  const runningJobs = new Map<string, { active: boolean }>();
 
-  app.get("/api/continuous/status", (req, res) => {
-    const userId = (req as any).user.id;
-    const job = continuousJobs.get(userId);
-    res.json({ active: job?.active || false });
-  });
+  function startContinuousJob(userId: string, categories: string[], location: string, sources: string[], startRound = 0) {
+    if (runningJobs.get(userId)?.active) return;
+    const handle = { active: true };
+    runningJobs.set(userId, handle);
 
-  app.post("/api/continuous/start", (req, res) => {
-    const userId = (req as any).user.id;
-    const { categories, location, sources } = req.body;
-    if (continuousJobs.get(userId)?.active) {
-      return res.json({ message: "Ya hay un proceso continuo activo" });
-    }
-    continuousJobs.set(userId, { active: true });
-    res.json({ message: "Proceso continuo iniciado" });
-
-    // Run in background
     (async () => {
-      const job = continuousJobs.get(userId)!;
-      let round = 0;
-      while (job.active) {
+      let round = startRound;
+      while (handle.active) {
         round++;
         console.log(`[Continuo] Ronda ${round} para ${userId}...`);
+
+        // Update DB with progress
+        db.prepare("UPDATE continuous_jobs SET rounds = ?, lastActivity = datetime('now') WHERE userId = ?").run(round, userId);
+
         try {
-          // Step 1: Discover
           let result;
-          const customSource = (sources || []).join(', ');
+          const customSource = sources.join(', ');
           if (geminiEnabled) {
             try {
-              result = await discoverWithGemini(categories || [], location || 'Ciudad de México', customSource);
+              result = await discoverWithGemini(categories, location, customSource);
             } catch {
-              result = await discoverWithScraping(categories || [], location || 'Ciudad de México', customSource);
+              result = await discoverWithScraping(categories, location, customSource);
             }
           } else {
-            result = await discoverWithScraping(categories || [], location || 'Ciudad de México', customSource);
+            result = await discoverWithScraping(categories, location, customSource);
           }
 
           if (result?.leads?.length > 0) {
-            // Deduplicate against existing
             const existing = db.prepare("SELECT name FROM prospects WHERE userId = ?").all(userId) as any[];
             const existingNames = new Set(existing.map((r: any) => r.name.toLowerCase().trim()));
             const newLeads = result.leads.filter((l: any) => !existingNames.has(l.name.toLowerCase().trim()));
@@ -1008,10 +1010,14 @@ Responde ÚNICAMENTE con JSON válido:
               console.log(`[Continuo] Ronda ${round}: ${newLeads.length} nuevos prospectos guardados`);
             }
 
-            // Step 2: Qualify + OSINT for pending prospects
+            // Qualify + OSINT for pending
             const pending = db.prepare("SELECT * FROM prospects WHERE userId = ? AND (contactQuality = 'pending' OR contactQuality IS NULL) LIMIT 5").all(userId) as any[];
             for (const p of pending) {
-              if (!job.active) break;
+              if (!handle.active) break;
+              // Check DB flag in case it was stopped via another server instance
+              const dbJob = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
+              if (!dbJob?.active) { handle.active = false; break; }
+
               try {
                 const osintData = await osintEnrich(p.name, p.specialty || '', p.location || '');
                 const directEmails = osintData.emails.filter(isDirectEmail);
@@ -1021,7 +1027,6 @@ Responde ÚNICAMENTE con JSON válido:
                 const newEmail = directEmails[0] || p.email;
                 const url = p.url || extractUrlFromSource(p.source, newEmail);
 
-                // Determine quality
                 let quality = 'pending';
                 if (newContact && newEmail && !['info@','contacto@','atencion@','recepcion@','hola@','admin@'].some(g => (newEmail||'').toLowerCase().startsWith(g))) {
                   quality = 'direct';
@@ -1040,20 +1045,75 @@ Responde ÚNICAMENTE con JSON válido:
           console.error(`[Continuo] Error en ronda ${round}: ${err.message}`);
         }
 
-        if (!job.active) break;
-        // Wait 60 seconds between rounds
+        if (!handle.active) break;
+        // Re-check DB flag before sleeping
+        const dbCheck = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
+        if (!dbCheck?.active) { handle.active = false; break; }
+
         await new Promise(resolve => setTimeout(resolve, 60000));
       }
+
+      // Mark stopped in DB
+      db.prepare("UPDATE continuous_jobs SET active = 0 WHERE userId = ?").run(userId);
+      runningJobs.delete(userId);
       console.log(`[Continuo] Proceso terminado para ${userId} tras ${round} rondas`);
     })();
+  }
+
+  app.get("/api/continuous/status", (req, res) => {
+    const userId = (req as any).user.id;
+    const job = db.prepare("SELECT * FROM continuous_jobs WHERE userId = ?").get(userId) as any;
+    res.json({
+      active: job?.active === 1,
+      rounds: job?.rounds || 0,
+      lastActivity: job?.lastActivity || null,
+      startedAt: job?.startedAt || null,
+    });
+  });
+
+  app.post("/api/continuous/start", (req, res) => {
+    const userId = (req as any).user.id;
+    const { categories, location, sources } = req.body;
+
+    const existing = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
+    if (existing?.active === 1 && runningJobs.get(userId)?.active) {
+      return res.json({ message: "Ya hay un proceso continuo activo" });
+    }
+
+    // Upsert job config
+    if (existing) {
+      db.prepare("UPDATE continuous_jobs SET active = 1, categories = ?, location = ?, sources = ?, rounds = 0, startedAt = datetime('now'), lastActivity = datetime('now') WHERE userId = ?")
+        .run(JSON.stringify(categories || []), location || 'Ciudad de México', JSON.stringify(sources || []), userId);
+    } else {
+      db.prepare("INSERT INTO continuous_jobs (userId, active, categories, location, sources, rounds, startedAt, lastActivity) VALUES (?, 1, ?, ?, ?, 0, datetime('now'), datetime('now'))")
+        .run(userId, JSON.stringify(categories || []), location || 'Ciudad de México', JSON.stringify(sources || []));
+    }
+
+    startContinuousJob(userId, categories || [], location || 'Ciudad de México', sources || []);
+    res.json({ message: "Proceso continuo iniciado" });
   });
 
   app.post("/api/continuous/stop", (req, res) => {
     const userId = (req as any).user.id;
-    const job = continuousJobs.get(userId);
-    if (job) job.active = false;
+    db.prepare("UPDATE continuous_jobs SET active = 0 WHERE userId = ?").run(userId);
+    const handle = runningJobs.get(userId);
+    if (handle) handle.active = false;
     res.json({ message: "Proceso continuo detenido" });
   });
+
+  // Resume active jobs on server start
+  const activeJobs = db.prepare("SELECT * FROM continuous_jobs WHERE active = 1").all() as any[];
+  for (const job of activeJobs) {
+    console.log(`[Continuo] Reanudando proceso para ${job.userId} (ronda ${job.rounds})...`);
+    try {
+      const categories = JSON.parse(job.categories || '[]');
+      const sources = JSON.parse(job.sources || '[]');
+      startContinuousJob(job.userId, categories, job.location || 'Ciudad de México', sources, job.rounds || 0);
+    } catch (err: any) {
+      console.error(`[Continuo] Error reanudando para ${job.userId}: ${err.message}`);
+      db.prepare("UPDATE continuous_jobs SET active = 0 WHERE userId = ?").run(job.userId);
+    }
+  }
 
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {

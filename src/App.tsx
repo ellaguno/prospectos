@@ -259,6 +259,7 @@ export default function App() {
   const [isEditing, setIsEditing] = useState(false);
   const [editForm, setEditForm] = useState<Partial<Prospect>>({});
   const [isContinuousRunning, setIsContinuousRunning] = useState(false);
+  const [continuousRounds, setContinuousRounds] = useState(0);
 
   const handleEnrich = async (prospect: Prospect) => {
     setIsEnriching(true);
@@ -330,7 +331,7 @@ export default function App() {
   useEffect(() => {
     if (!authUser) return;
     refreshProspects({ page: 1 });
-    authFetch('/api/continuous/status').then(r => r.json()).then(d => setIsContinuousRunning(d.active)).catch(() => {});
+    authFetch('/api/continuous/status').then(r => r.json()).then(d => { setIsContinuousRunning(d.active); setContinuousRounds(d.rounds || 0); }).catch(() => {});
   }, [authUser]);
 
   // Re-fetch when search, category, or sort changes
@@ -348,6 +349,7 @@ export default function App() {
         refreshProspects();
         const statusRes = await authFetch('/api/continuous/status');
         const statusData = await statusRes.json();
+        setContinuousRounds(statusData.rounds || 0);
         if (!statusData.active) setIsContinuousRunning(false);
       } catch {}
     }, 15000);
@@ -1047,7 +1049,7 @@ export default function App() {
             onClick={handleContinuousDiscovery}
           >
             <div className="w-2 h-2 bg-white rounded-full animate-pulse" />
-            <span className="text-xs font-medium">Descubrimiento continuo activo</span>
+            <span className="text-xs font-medium">Continuo activo — ronda {continuousRounds}</span>
             <Square size={12} />
           </motion.div>
         )}
