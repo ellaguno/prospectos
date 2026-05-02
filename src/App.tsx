@@ -424,6 +424,13 @@ export default function App() {
   const [editingUser, setEditingUser] = useState<any>(null);
   const [userForm, setUserForm] = useState({ username: '', password: '', displayName: '', role: 'user' });
   const [userError, setUserError] = useState('');
+  const [settingsTab, setSettingsTab] = useState<'users' | 'config'>('users');
+  const [settingsForm, setSettingsForm] = useState({
+    geminiApiKey: '', openrouterApiKey: '', openrouterModel: 'openrouter/free',
+    brevoApiKey: '', brevoSenderEmail: '', brevoSenderName: '', aiProvider: 'hybrid'
+  });
+  const [settingsMessage, setSettingsMessage] = useState('');
+  const [settingsLoading, setSettingsLoading] = useState(false);
 
   // Organization state
   const [showOrganizations, setShowOrganizations] = useState(false);
@@ -737,6 +744,30 @@ export default function App() {
     } catch {}
   };
 
+  const fetchSettings = async () => {
+    try {
+      const res = await authFetch('/api/settings');
+      if (res.ok) {
+        const data = await res.json();
+        setSettingsForm(data);
+      }
+    } catch {}
+  };
+
+  const handleSaveSettings = async () => {
+    setSettingsLoading(true);
+    setSettingsMessage('');
+    try {
+      const res = await authFetch('/api/settings', { method: 'POST', body: JSON.stringify(settingsForm) });
+      const data = await res.json();
+      setSettingsMessage(data.message || data.error || 'Guardado');
+    } catch {
+      setSettingsMessage('Error al guardar');
+    } finally {
+      setSettingsLoading(false);
+    }
+  };
+
   const handleSaveUser = async () => {
     setUserError('');
     if (!userForm.username) { setUserError('Usuario requerido'); return; }
@@ -989,7 +1020,7 @@ export default function App() {
       const allSources = customSource ? [...selectedSources, customSource] : selectedSources;
       await authFetch('/api/continuous/start', {
         method: 'POST',
-        body: JSON.stringify({ categories: selectedRoles, location: discoveryLocation, sources: allSources }),
+        body: JSON.stringify({ categories: selectedRoles, locations: cities, sources: allSources }),
       });
       setIsContinuousRunning(true);
       setShowAdvancedDiscovery(false);
@@ -1374,9 +1405,9 @@ export default function App() {
             </button>
             {isAdmin && (
               <button
-                onClick={() => { setShowUserAdmin(true); fetchUsers(); }}
+                onClick={() => { setShowUserAdmin(true); fetchUsers(); fetchSettings(); setSettingsTab('users'); setSettingsMessage(''); }}
                 className="p-2 text-slate-400 hover:text-slate-900 transition-colors shrink-0"
-                title="Administrar usuarios"
+                title="Configuración"
               >
                 <Settings size={14} />
               </button>
@@ -2986,10 +3017,129 @@ export default function App() {
                 <X size={18} />
               </button>
 
-              <h2 className="text-lg font-medium text-slate-900 mb-6 flex items-center gap-2">
-                <Settings size={20} /> Administrar Usuarios
+              <h2 className="text-lg font-medium text-slate-900 mb-4 flex items-center gap-2">
+                <Settings size={20} /> Configuración
               </h2>
 
+              {/* Tabs */}
+              <div className="flex gap-1 mb-6 border-b border-slate-200">
+                <button
+                  onClick={() => setSettingsTab('users')}
+                  className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
+                    settingsTab === 'users' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  Usuarios
+                </button>
+                <button
+                  onClick={() => setSettingsTab('config')}
+                  className={`px-4 py-2 text-xs font-medium border-b-2 transition-colors ${
+                    settingsTab === 'config' ? 'border-slate-900 text-slate-900' : 'border-transparent text-slate-400 hover:text-slate-600'
+                  }`}
+                >
+                  AI & SMTP
+                </button>
+              </div>
+
+              {settingsTab === 'config' ? (
+                /* ===== Config Tab ===== */
+                <div className="space-y-6">
+                  {/* AI Section */}
+                  <div>
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">Inteligencia Artificial</h3>
+                    <div className="bg-slate-50 border border-slate-200 rounded p-4 space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Gemini API Key</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 font-mono"
+                          value={settingsForm.geminiApiKey}
+                          onChange={e => setSettingsForm({...settingsForm, geminiApiKey: e.target.value})}
+                          placeholder="AIzaSy..."
+                        />
+                        <p className="text-[10px] text-slate-400 mt-1">Motor principal. Usa Google Search para descubrimiento y OSINT.</p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">OpenRouter API Key</label>
+                          <input
+                            type="password"
+                            className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 font-mono"
+                            value={settingsForm.openrouterApiKey}
+                            onChange={e => setSettingsForm({...settingsForm, openrouterApiKey: e.target.value})}
+                            placeholder="sk-or-..."
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Modelo OpenRouter</label>
+                          <input
+                            className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                            value={settingsForm.openrouterModel}
+                            onChange={e => setSettingsForm({...settingsForm, openrouterModel: e.target.value})}
+                            placeholder="openrouter/free"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-400">OpenRouter se usa como fallback cuando Gemini no está disponible.</p>
+                    </div>
+                  </div>
+
+                  {/* SMTP Section */}
+                  <div>
+                    <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-3">SMTP / Email (Brevo)</h3>
+                    <div className="bg-slate-50 border border-slate-200 rounded p-4 space-y-3">
+                      <div>
+                        <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Brevo API Key</label>
+                        <input
+                          type="password"
+                          className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 font-mono"
+                          value={settingsForm.brevoApiKey}
+                          onChange={e => setSettingsForm({...settingsForm, brevoApiKey: e.target.value})}
+                          placeholder="xkeysib-..."
+                        />
+                      </div>
+                      <div className="grid grid-cols-2 gap-3">
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email remitente</label>
+                          <input
+                            className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                            value={settingsForm.brevoSenderEmail}
+                            onChange={e => setSettingsForm({...settingsForm, brevoSenderEmail: e.target.value})}
+                            placeholder="contacto@tudominio.com"
+                          />
+                        </div>
+                        <div>
+                          <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Nombre remitente</label>
+                          <input
+                            className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900"
+                            value={settingsForm.brevoSenderName}
+                            onChange={e => setSettingsForm({...settingsForm, brevoSenderName: e.target.value})}
+                            placeholder="Mi Empresa"
+                          />
+                        </div>
+                      </div>
+                      <p className="text-[10px] text-slate-400">Necesario para enviar campañas de email. Obtén tu API key en <span className="font-mono">app.brevo.com</span></p>
+                    </div>
+                  </div>
+
+                  {settingsMessage && (
+                    <div className={`p-3 rounded text-xs ${settingsMessage.includes('Error') ? 'bg-red-50 border border-red-200 text-red-700' : 'bg-emerald-50 border border-emerald-200 text-emerald-700'}`}>
+                      {settingsMessage}
+                    </div>
+                  )}
+
+                  <button
+                    onClick={handleSaveSettings}
+                    disabled={settingsLoading}
+                    className="btn-primary text-xs flex items-center gap-2"
+                  >
+                    {settingsLoading ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <CheckCircle size={14} />}
+                    {settingsLoading ? 'Guardando...' : 'Guardar configuración'}
+                  </button>
+                </div>
+              ) : (
+              <>
+              {/* ===== Users Tab ===== */}
               {/* User Form */}
               <div className="bg-slate-50 border border-slate-200 rounded p-4 mb-6 space-y-3">
                 <h3 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
@@ -3100,6 +3250,8 @@ export default function App() {
                   ))}
                 </tbody>
               </table>
+              </>
+              )}
             </motion.div>
           </div>
         )}

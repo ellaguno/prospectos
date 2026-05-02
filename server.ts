@@ -1,6 +1,7 @@
 import express from "express";
 import { createServer as createViteServer } from "vite";
 import path from "path";
+import fs from "fs";
 import dotenv from "dotenv";
 import Database from "better-sqlite3";
 import cors from "cors";
@@ -812,6 +813,82 @@ Responde ÚNICAMENTE con JSON válido:
       const placeholders = ids.map(() => '?').join(',');
       db.prepare(`DELETE FROM prospects WHERE id IN (${placeholders}) AND userId = ?`).run(...ids, userId);
       res.json({ message: `${ids.length} prospecto(s) eliminado(s)` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Settings (admin only) ---
+  app.get("/api/settings", requireAdmin, (req, res) => {
+    try {
+      // Read current .env and return config (mask sensitive values)
+      const envPath = path.join(process.cwd(), ".env");
+      const envContent = fs.existsSync(envPath) ? fs.readFileSync(envPath, "utf-8") : "";
+      const envVars: Record<string, string> = {};
+      for (const line of envContent.split("\n")) {
+        const match = line.match(/^([^#=]+)=["']?(.*)["']?\s*$/);
+        if (match) envVars[match[1].trim()] = match[2].replace(/^["']|["']$/g, '');
+      }
+
+      res.json({
+        geminiApiKey: envVars.GEMINI_API_KEY || '',
+        openrouterApiKey: envVars.OPENROUTER_API_KEY || '',
+        openrouterModel: envVars.OPENROUTER_MODEL || 'openrouter/free',
+        brevoApiKey: envVars.BREVO_API_KEY || '',
+        brevoSenderEmail: envVars.BREVO_SENDER_EMAIL || '',
+        brevoSenderName: envVars.BREVO_SENDER_NAME || '',
+        aiProvider: envVars.AI_PROVIDER || 'hybrid',
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/settings", requireAdmin, (req, res) => {
+    try {
+      const envPath = path.join(process.cwd(), ".env");
+      const { geminiApiKey, openrouterApiKey, openrouterModel, brevoApiKey, brevoSenderEmail, brevoSenderName, aiProvider } = req.body;
+
+      // Read existing .env to preserve values not being updated
+      const existing: Record<string, string> = {};
+      if (fs.existsSync(envPath)) {
+        for (const line of fs.readFileSync(envPath, "utf-8").split("\n")) {
+          const match = line.match(/^([^#=]+)=["']?(.*)["']?\s*$/);
+          if (match) existing[match[1].trim()] = match[2].replace(/^["']|["']$/g, '');
+        }
+      }
+
+      // Update only provided fields
+      if (geminiApiKey !== undefined) existing.GEMINI_API_KEY = geminiApiKey;
+      if (openrouterApiKey !== undefined) existing.OPENROUTER_API_KEY = openrouterApiKey;
+      if (openrouterModel !== undefined) existing.OPENROUTER_MODEL = openrouterModel;
+      if (brevoApiKey !== undefined) existing.BREVO_API_KEY = brevoApiKey;
+      if (brevoSenderEmail !== undefined) existing.BREVO_SENDER_EMAIL = brevoSenderEmail;
+      if (brevoSenderName !== undefined) existing.BREVO_SENDER_NAME = brevoSenderName;
+      if (aiProvider !== undefined) existing.AI_PROVIDER = aiProvider;
+
+      // Preserve non-config keys
+      const preserveKeys = ['PORT', 'ADMIN_USER', 'ADMIN_PASSWORD', 'JWT_SECRET'];
+      for (const k of preserveKeys) {
+        if (!existing[k] && process.env[k]) existing[k] = process.env[k]!;
+      }
+
+      // Write .env
+      const envLines = Object.entries(existing).map(([k, v]) => `${k}="${v}"`);
+      fs.writeFileSync(envPath, envLines.join("\n") + "\n");
+
+      // Reload env vars in process
+      dotenv.config({ override: true });
+
+      // Update runtime variables
+      process.env.GEMINI_API_KEY = existing.GEMINI_API_KEY || '';
+      process.env.OPENROUTER_API_KEY = existing.OPENROUTER_API_KEY || '';
+      process.env.OPENROUTER_MODEL = existing.OPENROUTER_MODEL || 'openrouter/free';
+      process.env.BREVO_API_KEY = existing.BREVO_API_KEY || '';
+      process.env.BREVO_SENDER_EMAIL = existing.BREVO_SENDER_EMAIL || '';
+      process.env.BREVO_SENDER_NAME = existing.BREVO_SENDER_NAME || '';
+
+      res.json({ message: "Configuración guardada. Algunos cambios (como la API key de Gemini) requieren reiniciar el servidor." });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -1892,16 +1969,20 @@ Responde ÚNICAMENTE con JSON válido:
   // --- Continuous Discovery (persistent) ---
   const runningJobs = new Map<string, { active: boolean }>();
 
-  function startContinuousJob(userId: string, categories: string[], location: string, sources: string[], startRound = 0) {
+  function startContinuousJob(userId: string, categories: string[], locations: string[], sources: string[], startRound = 0) {
     if (runningJobs.get(userId)?.active) return;
     const handle = { active: true };
     runningJobs.set(userId, handle);
+
+    const allLocations = locations.length > 0 ? locations : ['Ciudad de México'];
 
     (async () => {
       let round = startRound;
       while (handle.active) {
         round++;
-        console.log(`[Continuo] Ronda ${round} para ${userId}...`);
+        // Rotate through locations: each round picks a different city
+        const location = allLocations[(round - 1) % allLocations.length];
+        console.log(`[Continuo] Ronda ${round} para ${userId} — ${location} (${categories.join(', ')})...`);
 
         // Update DB with progress
         db.prepare("UPDATE continuous_jobs SET rounds = ?, lastActivity = datetime('now') WHERE userId = ?").run(round, userId);
@@ -1934,14 +2015,13 @@ Responde ÚNICAMENTE con JSON válido:
                 }
               });
               tx(newLeads);
-              console.log(`[Continuo] Ronda ${round}: ${newLeads.length} nuevos prospectos guardados`);
+              console.log(`[Continuo] Ronda ${round} (${location}): ${newLeads.length} nuevos prospectos guardados`);
             }
 
             // Qualify + OSINT for pending
             const pending = db.prepare("SELECT * FROM prospects WHERE userId = ? AND (contactQuality = 'pending' OR contactQuality IS NULL) LIMIT 5").all(userId) as any[];
             for (const p of pending) {
               if (!handle.active) break;
-              // Check DB flag in case it was stopped via another server instance
               const dbJob = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
               if (!dbJob?.active) { handle.active = false; break; }
 
@@ -1973,14 +2053,12 @@ Responde ÚNICAMENTE con JSON válido:
         }
 
         if (!handle.active) break;
-        // Re-check DB flag before sleeping
         const dbCheck = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
         if (!dbCheck?.active) { handle.active = false; break; }
 
         await new Promise(resolve => setTimeout(resolve, 60000));
       }
 
-      // Mark stopped in DB
       db.prepare("UPDATE continuous_jobs SET active = 0 WHERE userId = ?").run(userId);
       runningJobs.delete(userId);
       console.log(`[Continuo] Proceso terminado para ${userId} tras ${round} rondas`);
@@ -2000,23 +2078,26 @@ Responde ÚNICAMENTE con JSON válido:
 
   app.post("/api/continuous/start", (req, res) => {
     const userId = (req as any).user.id;
-    const { categories, location, sources } = req.body;
+    const { categories, locations, location, sources } = req.body;
+    // Support both "locations" (array) and legacy "location" (string)
+    const locArray: string[] = Array.isArray(locations) ? locations : (location ? [location] : ['Ciudad de México']);
+    const locJson = JSON.stringify(locArray);
 
     const existing = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;
     if (existing?.active === 1 && runningJobs.get(userId)?.active) {
       return res.json({ message: "Ya hay un proceso continuo activo" });
     }
 
-    // Upsert job config
+    // Upsert job config — store locations as JSON array in the location column
     if (existing) {
       db.prepare("UPDATE continuous_jobs SET active = 1, categories = ?, location = ?, sources = ?, rounds = 0, startedAt = datetime('now'), lastActivity = datetime('now') WHERE userId = ?")
-        .run(JSON.stringify(categories || []), location || 'Ciudad de México', JSON.stringify(sources || []), userId);
+        .run(JSON.stringify(categories || []), locJson, JSON.stringify(sources || []), userId);
     } else {
       db.prepare("INSERT INTO continuous_jobs (userId, active, categories, location, sources, rounds, startedAt, lastActivity) VALUES (?, 1, ?, ?, ?, 0, datetime('now'), datetime('now'))")
-        .run(userId, JSON.stringify(categories || []), location || 'Ciudad de México', JSON.stringify(sources || []));
+        .run(userId, JSON.stringify(categories || []), locJson, JSON.stringify(sources || []));
     }
 
-    startContinuousJob(userId, categories || [], location || 'Ciudad de México', sources || []);
+    startContinuousJob(userId, categories || [], locArray, sources || []);
     res.json({ message: "Proceso continuo iniciado" });
   });
 
@@ -2035,7 +2116,12 @@ Responde ÚNICAMENTE con JSON válido:
     try {
       const categories = JSON.parse(job.categories || '[]');
       const sources = JSON.parse(job.sources || '[]');
-      startContinuousJob(job.userId, categories, job.location || 'Ciudad de México', sources, job.rounds || 0);
+      // location column may be a JSON array or a plain string (legacy)
+      let locArray: string[];
+      try { locArray = JSON.parse(job.location || '[]'); } catch { locArray = [job.location || 'Ciudad de México']; }
+      if (!Array.isArray(locArray)) locArray = [locArray as any];
+      if (locArray.length === 0) locArray = ['Ciudad de México'];
+      startContinuousJob(job.userId, categories, locArray, sources, job.rounds || 0);
     } catch (err: any) {
       console.error(`[Continuo] Error reanudando para ${job.userId}: ${err.message}`);
       db.prepare("UPDATE continuous_jobs SET active = 0 WHERE userId = ?").run(job.userId);
