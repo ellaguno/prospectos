@@ -40,17 +40,25 @@ const LEAD_SCHEMA = {
   }
 };
 
+const VALID_CATEGORIES = ['Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'];
+
 function classifyProspect(name: string, specialty: string, aiCategory: string): string {
-  const validCategories = ['Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'];
-  const text = (specialty + ' ' + name).toLowerCase();
+  const text = (specialty + ' ' + name + ' ' + aiCategory).toLowerCase();
   // Check Legal FIRST to avoid notarios being caught by salud keywords
-  if (text.includes('notario') || text.includes('abogado') || text.includes('legal') || text.includes('jurídic') || text.includes('juridic') || text.includes('despacho jurídico') || text.includes('licenciado en derecho')) return 'Legal';
-  if (text.includes('doctor') || text.includes('médic') || text.includes('medic') || text.includes('dentista') || text.includes('clínica') || text.includes('clinica') || text.includes('hospital') || text.includes('ciruj') || text.includes('salud') || text.includes('cardiólog') || text.includes('pediatr') || text.includes('ginecólog') || text.includes('dermatólog') || text.includes('oftalmólog') || text.includes('neurólog') || text.includes('ortoped') || text.includes('urólog') || text.includes('psiquiatr') || text.includes('oncólog') || text.includes('gastro') || text.includes('neumólog') || text.includes('endocrin') || text.includes('odontólog') || text.includes('fisioter') || text.includes('nutriólog')) return 'Salud';
-  if (text.includes('inversionista') || text.includes('empresario') || text.includes('dueño') || text.includes('socio') || text.includes('capital') || text.includes('bienes raíces') || text.includes('bienes raices') || text.includes('inmobiliar')) return 'Inversión';
+  if (text.includes('notario') || text.includes('notaria') || text.includes('abogad') || text.includes('legal') || text.includes('jurídic') || text.includes('juridic') || text.includes('despacho jurídico') || text.includes('licenciado en derecho')) return 'Legal';
+  if (text.includes('doctor') || text.includes('médic') || text.includes('medic') || text.includes('dentist') || text.includes('clínica') || text.includes('clinica') || text.includes('hospital') || text.includes('ciruj') || text.includes('salud') || text.includes('sanidad') || text.includes('cardiólog') || text.includes('cardiologist') || text.includes('pediatr') || text.includes('ginecólog') || text.includes('gynecolog') || text.includes('dermatólog') || text.includes('oftalmólog') || text.includes('ophthalmolog') || text.includes('neurólog') || text.includes('neurolog') || text.includes('ortoped') || text.includes('urólog') || text.includes('psiquiatr') || text.includes('psicólog') || text.includes('oncólog') || text.includes('gastro') || text.includes('neumólog') || text.includes('endocrin') || text.includes('odontólog') || text.includes('fisioter') || text.includes('nutriólog')) return 'Salud';
+  if (text.includes('inversionista') || text.includes('empresari') || text.includes('emprendedor') || text.includes('dueño') || text.includes('socio') || text.includes('capital') || text.includes('bienes raíces') || text.includes('bienes raices') || text.includes('inmobiliar')) return 'Inversión';
   if (text.includes('arquitect') || text.includes('ingenier') || text.includes('construcción') || text.includes('construccion') || text.includes('civil')) return 'Arquitectura';
-  if (text.includes('profesional') || text.includes('especialista') || text.includes('consult')) return 'Profesionales';
-  if (validCategories.includes(aiCategory)) return aiCategory;
+  if (text.includes('profesional') || text.includes('especialista') || text.includes('consult') || text.includes('contador') || text.includes('project manager')) return 'Profesionales';
+  if (VALID_CATEGORIES.includes(aiCategory)) return aiCategory;
   return 'Otros';
+}
+
+// Normalize: respect canonical categories, otherwise classify by text.
+function normalizeCategory(rawCategory: string | undefined, name: string, specialty: string): string {
+  const c = (rawCategory || '').trim();
+  if (VALID_CATEGORIES.includes(c)) return c;
+  return classifyProspect(name || '', specialty || '', c);
 }
 
 const CATEGORY_RULES = `
@@ -598,7 +606,8 @@ async function startServer() {
       for (const p of leads) {
         const id = Math.random().toString(36).substr(2, 9);
         const url = p.url || extractUrlFromSource(p.source, p.email);
-        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, p.notes || '', url, userId);
+        const category = normalizeCategory(p.category, p.name, p.specialty);
+        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, p.notes || '', url, userId);
       }
     });
 
@@ -849,8 +858,13 @@ Responde ÚNICAMENTE con JSON válido:
       const values: any[] = [];
       for (const field of allowedFields) {
         if (req.body[field] !== undefined) {
+          let value = req.body[field];
+          if (field === 'category') {
+            const current = db.prepare("SELECT name, specialty FROM prospects WHERE id = ? AND userId = ?").get(id, userId) as any;
+            value = normalizeCategory(value, current?.name || req.body.name || '', current?.specialty || req.body.specialty || '');
+          }
           updates.push(`${field} = ?`);
-          values.push(req.body[field]);
+          values.push(value);
         }
       }
       if (updates.length === 0) return res.json({ message: "Nothing to update" });
