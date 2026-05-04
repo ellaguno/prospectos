@@ -40,6 +40,29 @@ const LEAD_SCHEMA = {
   }
 };
 
+function classifyProspect(name: string, specialty: string, aiCategory: string): string {
+  const validCategories = ['Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'];
+  const text = (specialty + ' ' + name).toLowerCase();
+  // Check Legal FIRST to avoid notarios being caught by salud keywords
+  if (text.includes('notario') || text.includes('abogado') || text.includes('legal') || text.includes('jurídic') || text.includes('juridic') || text.includes('despacho jurídico') || text.includes('licenciado en derecho')) return 'Legal';
+  if (text.includes('doctor') || text.includes('médic') || text.includes('medic') || text.includes('dentista') || text.includes('clínica') || text.includes('clinica') || text.includes('hospital') || text.includes('ciruj') || text.includes('salud') || text.includes('cardiólog') || text.includes('pediatr') || text.includes('ginecólog') || text.includes('dermatólog') || text.includes('oftalmólog') || text.includes('neurólog') || text.includes('ortoped') || text.includes('urólog') || text.includes('psiquiatr') || text.includes('oncólog') || text.includes('gastro') || text.includes('neumólog') || text.includes('endocrin') || text.includes('odontólog') || text.includes('fisioter') || text.includes('nutriólog')) return 'Salud';
+  if (text.includes('inversionista') || text.includes('empresario') || text.includes('dueño') || text.includes('socio') || text.includes('capital') || text.includes('bienes raíces') || text.includes('bienes raices') || text.includes('inmobiliar')) return 'Inversión';
+  if (text.includes('arquitect') || text.includes('ingenier') || text.includes('construcción') || text.includes('construccion') || text.includes('civil')) return 'Arquitectura';
+  if (text.includes('profesional') || text.includes('especialista') || text.includes('consult')) return 'Profesionales';
+  if (validCategories.includes(aiCategory)) return aiCategory;
+  return 'Otros';
+}
+
+const CATEGORY_RULES = `
+REGLAS DE CLASIFICACIÓN OBLIGATORIAS para el campo "category":
+- Doctores, Médicos, Dentistas, Cirujanos, personal de hospitales/clínicas → "Salud"
+- Abogados, Notarios, Juristas, personal legal → "Legal"
+- Inversionistas, Empresarios, Dueños de empresa, Socios capitalistas → "Inversión"
+- Arquitectos, Ingenieros, Constructores → "Arquitectura"
+- Consultores, Especialistas, Profesionistas independientes → "Profesionales"
+- Todo lo demás → "Otros"
+El campo "category" DEBE ser exactamente uno de: "Salud", "Legal", "Inversión", "Arquitectura", "Profesionales", "Otros".`;
+
 async function discoverWithGemini(categories: string[], location: string, customSource?: string): Promise<any> {
   if (!ai) throw new Error("Gemini not configured");
 
@@ -48,6 +71,8 @@ async function discoverWithGemini(categories: string[], location: string, custom
   Tipos de perfil solicitado: ${categories.join(', ')}.
   ${customSource ? `PRIORIZA buscar en estas fuentes: ${customSource}.` : "Busca en Google, LinkedIn, directorios profesionales y sitios especializados regionales (Sección Amarilla, Doctoralia, etc.)."}
   Para cada prospecto necesito: Nombre completo, Especialidad o Cargo/Empresa, Ubicación aproximada (Ciudad/Colonia/Edificio), Teléfono REAL (incluyendo lada de la ciudad), Correo Electrónico público (si está disponible), y la URL o Fuente de donde obtuviste la información.
+
+  ${CATEGORY_RULES}
 
   IMPORTANTE: Usa la herramienta de búsqueda para encontrar datos REALES y VERIFICABLES. No inventes teléfonos ni datos.
   Asegúrate de que sean profesionales que operen actualmente en ${location}.
@@ -131,7 +156,7 @@ async function extractWithGemini(textContent: string): Promise<any> {
   Texto: """${textContent}"""
 
   Para CADA persona o profesional que encuentres, extrae: nombre completo, especialidad/cargo/empresa, ubicación/ciudad, teléfono, correo electrónico, y fuente.
-  Clasifica cada lead en una de estas categorías: 'Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'.
+  ${CATEGORY_RULES}
   Si el texto es un CSV o tabla, interpreta las columnas correctamente.`;
 
   const response = await ai.models.generateContent({
@@ -171,6 +196,13 @@ try { db.exec(`ALTER TABLE prospects ADD COLUMN userId TEXT DEFAULT 'admin'`); }
 // Migration: add notes and url columns
 try { db.exec(`ALTER TABLE prospects ADD COLUMN notes TEXT DEFAULT ''`); } catch {};
 try { db.exec(`ALTER TABLE prospects ADD COLUMN url TEXT DEFAULT ''`); } catch {};
+// Migration: add extra contact detail fields
+try { db.exec(`ALTER TABLE prospects ADD COLUMN address TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN position TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN phone2 TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN phone3 TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN email2 TEXT DEFAULT ''`); } catch {};
+try { db.exec(`ALTER TABLE prospects ADD COLUMN email3 TEXT DEFAULT ''`); } catch {};
 
 // --- Users table ---
 db.exec(`CREATE TABLE IF NOT EXISTS users (
@@ -200,6 +232,20 @@ db.exec(`CREATE TABLE IF NOT EXISTS organizations (
   userId TEXT NOT NULL,
   createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
 )`);
+// --- Organization addresses table ---
+db.exec(`CREATE TABLE IF NOT EXISTS org_addresses (
+  id TEXT PRIMARY KEY,
+  organizationId TEXT NOT NULL,
+  label TEXT DEFAULT '',
+  street TEXT DEFAULT '',
+  city TEXT DEFAULT '',
+  state TEXT DEFAULT '',
+  zip TEXT DEFAULT '',
+  country TEXT DEFAULT 'México',
+  notes TEXT DEFAULT '',
+  createdAt DATETIME DEFAULT CURRENT_TIMESTAMP
+)`);
+
 // Migration: add organizationId and orgRole to prospects
 try { db.exec(`ALTER TABLE prospects ADD COLUMN organizationId TEXT DEFAULT NULL`); } catch {};
 try { db.exec(`ALTER TABLE prospects ADD COLUMN orgRole TEXT DEFAULT ''`); } catch {};
@@ -502,6 +548,18 @@ async function startServer() {
 
       const total = (db.prepare(`SELECT COUNT(*) as count FROM prospects ${where}`).get(...params) as any).count;
 
+      // Category counts (always unfiltered by category, but respecting search)
+      let countWhere = "WHERE userId = ?";
+      const countParams: any[] = [userId];
+      if (search) {
+        countWhere += " AND (name LIKE ? OR specialty LIKE ? OR location LIKE ?)";
+        const like = `%${search}%`;
+        countParams.push(like, like, like);
+      }
+      const catRows = db.prepare(`SELECT category, COUNT(*) as count FROM prospects ${countWhere} GROUP BY category`).all(...countParams) as any[];
+      const categoryCounts: Record<string, number> = {};
+      for (const r of catRows) categoryCounts[r.category || 'Otros'] = r.count;
+
       let rows;
       if (all) {
         rows = db.prepare(`SELECT * FROM prospects ${where} ORDER BY ${orderBy}`).all(...params);
@@ -510,7 +568,7 @@ async function startServer() {
         rows = db.prepare(`SELECT * FROM prospects ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`).all(...params, limit, offset);
       }
 
-      res.json({ data: rows, total, page, limit, totalPages: Math.ceil(total / limit) });
+      res.json({ data: rows, total, page, limit, totalPages: Math.ceil(total / limit), categoryCounts });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -698,12 +756,14 @@ CONTENIDO SCRAPEADO:
 """${combinedText}"""
 
 Para cada prospecto necesito: Nombre completo, Especialidad o Cargo/Empresa, Ubicación, Teléfono (con lada), Correo electrónico (si aparece), y la Fuente/URL de donde se obtuvo.
+${CATEGORY_RULES}
 
 Responde ÚNICAMENTE con JSON válido:
 {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`
       : `Genera una lista de 20 prospectos de alto perfil en ${loc}.
 Tipos de perfil: ${categories.join(", ")}.
-Para cada uno: Nombre completo, Especialidad, Ubicación, Teléfono, Email, Categoría (Salud|Legal|Inversión|Arquitectura|Profesionales|Otros), Fuente.
+Para cada uno: Nombre completo, Especialidad, Ubicación, Teléfono, Email, Fuente.
+${CATEGORY_RULES}
 
 Responde ÚNICAMENTE con JSON válido:
 {"leads": [{"name": "", "specialty": "", "location": "", "contact": "", "email": "", "category": "", "source": ""}]}`;
@@ -783,7 +843,7 @@ Responde ÚNICAMENTE con JSON válido:
   app.patch("/api/prospects/:id", (req, res) => {
     const { id } = req.params;
     const userId = (req as any).user.id;
-    const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality', 'notes', 'url', 'organizationId', 'orgRole'];
+    const allowedFields = ['name', 'specialty', 'location', 'contact', 'email', 'category', 'source', 'contactQuality', 'notes', 'url', 'organizationId', 'orgRole', 'address', 'position', 'phone2', 'phone3', 'email2', 'email3'];
     try {
       const updates: string[] = [];
       const values: any[] = [];
@@ -971,6 +1031,41 @@ Responde ÚNICAMENTE con JSON válido:
       db.prepare("UPDATE prospects SET organizationId = NULL, orgRole = '' WHERE organizationId = ? AND userId = ?").run(id, userId);
       db.prepare("DELETE FROM organizations WHERE id = ? AND userId = ?").run(id, userId);
       res.json({ message: "Organización eliminada" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Organization Addresses ---
+  app.get("/api/organizations/:id/addresses", (req, res) => {
+    const { id } = req.params;
+    try {
+      const addresses = db.prepare("SELECT * FROM org_addresses WHERE organizationId = ? ORDER BY createdAt").all(id);
+      res.json(addresses);
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post("/api/organizations/:id/addresses", (req, res) => {
+    const { id: orgId } = req.params;
+    const { label, street, city, state, zip, country, notes } = req.body;
+    try {
+      const addrId = Math.random().toString(36).substr(2, 9);
+      db.prepare("INSERT INTO org_addresses (id, organizationId, label, street, city, state, zip, country, notes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)").run(
+        addrId, orgId, label || '', street || '', city || '', state || '', zip || '', country || 'México', notes || ''
+      );
+      res.json({ id: addrId, message: "Dirección agregada" });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete("/api/organizations/:id/addresses/:addrId", (req, res) => {
+    const { id: orgId, addrId } = req.params;
+    try {
+      db.prepare("DELETE FROM org_addresses WHERE id = ? AND organizationId = ?").run(addrId, orgId);
+      res.json({ message: "Dirección eliminada" });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2011,15 +2106,16 @@ Responde ÚNICAMENTE con JSON válido:
                 for (const p of leads) {
                   const id = Math.random().toString(36).substr(2, 9);
                   const url = extractUrlFromSource(p.source, p.email);
-                  insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, p.category, p.source, '', url, userId);
+                  const category = classifyProspect(p.name, p.specialty || '', p.category || '');
+                  insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, '', url, userId);
                 }
               });
               tx(newLeads);
               console.log(`[Continuo] Ronda ${round} (${location}): ${newLeads.length} nuevos prospectos guardados`);
             }
 
-            // Qualify + OSINT for pending
-            const pending = db.prepare("SELECT * FROM prospects WHERE userId = ? AND (contactQuality = 'pending' OR contactQuality IS NULL) LIMIT 5").all(userId) as any[];
+            // Qualify + OSINT for pending (process more per round)
+            const pending = db.prepare("SELECT * FROM prospects WHERE userId = ? AND (contactQuality = 'pending' OR contactQuality IS NULL) LIMIT 10").all(userId) as any[];
             for (const p of pending) {
               if (!handle.active) break;
               const dbJob = db.prepare("SELECT active FROM continuous_jobs WHERE userId = ?").get(userId) as any;

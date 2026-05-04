@@ -49,6 +49,18 @@ import {
 import { motion, AnimatePresence } from 'motion/react';
 import { discoverProspects, extractFromText } from './services/aiService';
 
+interface OrgAddress {
+  id: string;
+  organizationId: string;
+  label: string;
+  street: string;
+  city: string;
+  state: string;
+  zip: string;
+  country: string;
+  notes: string;
+}
+
 interface Organization {
   id: string;
   name: string;
@@ -61,6 +73,7 @@ interface Organization {
   notes: string;
   memberCount?: number;
   members?: Prospect[];
+  addresses?: OrgAddress[];
   createdAt?: any;
 }
 
@@ -78,6 +91,12 @@ interface Prospect {
   url?: string;
   organizationId?: string;
   orgRole?: string;
+  address?: string;
+  position?: string;
+  phone2?: string;
+  phone3?: string;
+  email2?: string;
+  email3?: string;
   createdAt?: any;
 }
 
@@ -221,6 +240,7 @@ export default function App() {
   const [totalProspects, setTotalProspects] = useState(0);
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [categoryCounts, setCategoryCounts] = useState<Record<string, number>>({});
   const [pageSize, setPageSize] = useState(() => {
     const saved = localStorage.getItem('prospectos_page_size');
     return saved ? parseInt(saved) : 50;
@@ -345,6 +365,7 @@ export default function App() {
       setTotalProspects(result.total || 0);
       setCurrentPage(result.page || 1);
       setTotalPages(result.totalPages || 1);
+      if (result.categoryCounts) setCategoryCounts(result.categoryCounts);
     } catch (error) {
       console.error("Fetch failed", error);
       if (opts?.all) return [];
@@ -441,6 +462,15 @@ export default function App() {
   const [editingOrg, setEditingOrg] = useState(false);
   const [isDetectingOrgs, setIsDetectingOrgs] = useState(false);
   const [detectOrgResult, setDetectOrgResult] = useState('');
+  const [orgSearchTerm, setOrgSearchTerm] = useState('');
+  const [showBulkOrgAssign, setShowBulkOrgAssign] = useState(false);
+  const [bulkOrgId, setBulkOrgId] = useState('');
+  const [orgAddresses, setOrgAddresses] = useState<OrgAddress[]>([]);
+  const [showAddAddress, setShowAddAddress] = useState(false);
+  const [addressForm, setAddressForm] = useState({ label: '', street: '', city: '', state: '', zip: '', country: 'México', notes: '' });
+  const [showAddOrgMember, setShowAddOrgMember] = useState(false);
+  const [orgMemberSearch, setOrgMemberSearch] = useState('');
+  const [relationSearchTerm, setRelationSearchTerm] = useState('');
 
   const fetchOrganizations = async (search?: string) => {
     try {
@@ -457,7 +487,32 @@ export default function App() {
         const data = await res.json();
         setSelectedOrg(data);
         fetchHierarchy(id);
+        // Fetch addresses
+        try {
+          const addrRes = await authFetch(`/api/organizations/${id}/addresses`);
+          if (addrRes.ok) setOrgAddresses(await addrRes.json());
+          else setOrgAddresses([]);
+        } catch { setOrgAddresses([]); }
       }
+    } catch {}
+  };
+
+  const handleAddOrgAddress = async (orgId: string) => {
+    if (!addressForm.street && !addressForm.city) return;
+    try {
+      await authFetch(`/api/organizations/${orgId}/addresses`, { method: 'POST', body: JSON.stringify(addressForm) });
+      setAddressForm({ label: '', street: '', city: '', state: '', zip: '', country: 'México', notes: '' });
+      setShowAddAddress(false);
+      const addrRes = await authFetch(`/api/organizations/${orgId}/addresses`);
+      if (addrRes.ok) setOrgAddresses(await addrRes.json());
+    } catch {}
+  };
+
+  const handleDeleteOrgAddress = async (orgId: string, addrId: string) => {
+    try {
+      await authFetch(`/api/organizations/${orgId}/addresses/${addrId}`, { method: 'DELETE' });
+      const addrRes = await authFetch(`/api/organizations/${orgId}/addresses`);
+      if (addrRes.ok) setOrgAddresses(await addrRes.json());
     } catch {}
   };
 
@@ -995,7 +1050,7 @@ export default function App() {
   };
 
   const startEditing = (prospect: Prospect) => {
-    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source, notes: prospect.notes || '', url: prospect.url || '', organizationId: prospect.organizationId || '', orgRole: prospect.orgRole || '' });
+    setEditForm({ name: prospect.name, specialty: prospect.specialty, location: prospect.location, contact: prospect.contact, email: prospect.email || '', category: prospect.category, source: prospect.source, notes: prospect.notes || '', url: prospect.url || '', organizationId: prospect.organizationId || '', orgRole: prospect.orgRole || '', address: prospect.address || '', position: prospect.position || '', phone2: prospect.phone2 || '', phone3: prospect.phone3 || '', email2: prospect.email2 || '', email3: prospect.email3 || '' });
     setIsEditing(true);
   };
 
@@ -1069,20 +1124,26 @@ export default function App() {
       if (data.leads) {
         const mappedLeads = data.leads.map((l: any) => {
           let category: Prospect['category'] = 'Otros';
-          const combined = ((l.name || '') + ' ' + (l.specialty || '') + ' ' + (l.category || '')).toLowerCase();
-          // Check specialty/name first (more specific), then fall back to selectedRoles
-          const rolesLower = selectedRoles.join(' ').toLowerCase();
+          const specialty = ((l.specialty || '') + ' ' + (l.name || '')).toLowerCase();
+          const aiCategory = (l.category || '').trim();
+          const validCategories = ['Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'];
 
-          if (combined.includes('doctor') || combined.includes('médic') || combined.includes('medic') || combined.includes('dentista') || combined.includes('clínica') || combined.includes('clinica') || combined.includes('hospital') || combined.includes('ciruj') || combined.includes('salud')) category = 'Salud';
-          else if (combined.includes('abogado') || combined.includes('legal') || combined.includes('notario') || combined.includes('jurídic')) category = 'Legal';
-          else if (combined.includes('inversionista') || combined.includes('empresario') || combined.includes('dueño') || combined.includes('socio')) category = 'Inversión';
-          else if (combined.includes('arquitect') || combined.includes('ingenier') || combined.includes('construcción') || combined.includes('civil')) category = 'Arquitectura';
-          else if (combined.includes('profesional') || combined.includes('especialista') || combined.includes('consult')) category = 'Profesionales';
-          // If no match from content, infer from selected roles
-          else if (rolesLower.includes('doctor')) category = 'Salud';
-          else if (rolesLower.includes('abogado') || rolesLower.includes('notario')) category = 'Legal';
-          else if (rolesLower.includes('inversionista') || rolesLower.includes('empresario')) category = 'Inversión';
-          else if (rolesLower.includes('arquitect') || rolesLower.includes('ingenier')) category = 'Arquitectura';
+          // Check Legal FIRST (notarios, abogados) before Salud to avoid misclassification
+          if (specialty.includes('notario') || specialty.includes('abogado') || specialty.includes('legal') || specialty.includes('jurídic') || specialty.includes('juridic')) category = 'Legal';
+          else if (specialty.includes('doctor') || specialty.includes('médic') || specialty.includes('medic') || specialty.includes('dentista') || specialty.includes('clínica') || specialty.includes('clinica') || specialty.includes('hospital') || specialty.includes('ciruj') || specialty.includes('salud')) category = 'Salud';
+          else if (specialty.includes('inversionista') || specialty.includes('empresario') || specialty.includes('dueño') || specialty.includes('socio')) category = 'Inversión';
+          else if (specialty.includes('arquitect') || specialty.includes('ingenier') || specialty.includes('construcción') || specialty.includes('civil')) category = 'Arquitectura';
+          else if (specialty.includes('profesional') || specialty.includes('especialista') || specialty.includes('consult')) category = 'Profesionales';
+          // Trust AI category if valid
+          else if (validCategories.includes(aiCategory)) category = aiCategory as Prospect['category'];
+          // Fallback: infer from selected roles
+          else {
+            const rolesLower = selectedRoles.join(' ').toLowerCase();
+            if (rolesLower.includes('doctor')) category = 'Salud';
+            else if (rolesLower.includes('abogado') || rolesLower.includes('notario')) category = 'Legal';
+            else if (rolesLower.includes('inversionista') || rolesLower.includes('empresario')) category = 'Inversión';
+            else if (rolesLower.includes('arquitect') || rolesLower.includes('ingenier')) category = 'Arquitectura';
+          }
 
           return { ...l, category };
         });
@@ -1344,7 +1405,14 @@ export default function App() {
                 {cat === 'Profesionales' && <Briefcase size={18} />}
                 {cat === 'Otros' && <Plus size={18} />}
               </div>
-              {!sidebarCollapsed && <span className="text-xs font-medium">{cat === 'All' ? 'Todos los registros' : cat}</span>}
+              {!sidebarCollapsed && (
+                <span className="text-xs font-medium flex-1 text-left">{cat === 'All' ? 'Todos los registros' : cat}</span>
+              )}
+              {!sidebarCollapsed && (
+                <span className={`text-[10px] font-mono ${activeCategory === cat ? 'text-white/60' : 'text-slate-400'}`}>
+                  {cat === 'All' ? totalProspects : (categoryCounts[cat] || 0)}
+                </span>
+              )}
             </button>
           ))}
 
@@ -1455,7 +1523,11 @@ export default function App() {
                 </div>
                 <h1 className="text-4xl font-light text-slate-900 tracking-tight">Organizaciones</h1>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3">
+                <div className="relative">
+                  <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-300" />
+                  <input type="text" value={orgSearchTerm} onChange={e => setOrgSearchTerm(e.target.value)} placeholder="Buscar organizaciones..." className="pl-9 pr-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900 w-64" />
+                </div>
                 <button
                   onClick={() => { setOrgForm({ name: '', type: '', location: '', website: '', phone: '', email: '', notes: '' }); setEditingOrg(false); setShowOrgModal(true); }}
                   className="btn-primary flex items-center gap-2 text-xs"
@@ -1498,7 +1570,11 @@ export default function App() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {organizations.map(org => (
+                  {organizations.filter(org => {
+                    if (!orgSearchTerm) return true;
+                    const q = orgSearchTerm.toLowerCase();
+                    return (org.name || '').toLowerCase().includes(q) || (org.type || '').toLowerCase().includes(q) || (org.location || '').toLowerCase().includes(q);
+                  }).map(org => (
                     <tr
                       key={org.id}
                       onClick={() => fetchOrgDetail(org.id)}
@@ -1746,11 +1822,11 @@ export default function App() {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-px bg-slate-200 border border-slate-200 mb-12 shadow-sm rounded-lg overflow-hidden">
           {[
             { label: 'Registros', value: totalProspects },
-            { label: 'Salud', value: prospects.filter(p => p.category === 'Salud').length },
-            { label: 'Legal', value: prospects.filter(p => p.category === 'Legal').length },
-            { label: 'Inversión', value: prospects.filter(p => p.category === 'Inversión').length },
-            { label: 'Arquitectura', value: prospects.filter(p => p.category === 'Arquitectura').length },
-            { label: 'Meta', value: '100+' },
+            { label: 'Salud', value: categoryCounts['Salud'] || 0 },
+            { label: 'Legal', value: categoryCounts['Legal'] || 0 },
+            { label: 'Inversión', value: categoryCounts['Inversión'] || 0 },
+            { label: 'Arquitectura', value: categoryCounts['Arquitectura'] || 0 },
+            { label: 'Profesionales', value: categoryCounts['Profesionales'] || 0 },
           ].map((stat, i) => (
             <div key={i} className="bg-white p-6">
               <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1 block">{stat.label}</span>
@@ -1821,12 +1897,42 @@ export default function App() {
             <button onClick={handleBulkVCF} className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors">
               <Contact size={12} /> Exportar VCF
             </button>
-            <button
-              onClick={() => setShowOrganizations(true)}
-              className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors"
-            >
-              <Building2 size={12} /> Organizaciones
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => { setShowBulkOrgAssign(!showBulkOrgAssign); if (!showBulkOrgAssign) fetchOrganizations(); }}
+                className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors"
+              >
+                <Building2 size={12} /> Asignar Org.
+              </button>
+              {showBulkOrgAssign && (
+                <div className="absolute top-full left-0 mt-1 bg-white border border-slate-200 rounded-lg shadow-xl p-3 z-50 min-w-[280px]">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-widest mb-2">Asignar {selectedIds.size} prospectos a:</p>
+                  <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs mb-2 focus:outline-none focus:border-slate-900 text-slate-900" value={bulkOrgId} onChange={e => setBulkOrgId(e.target.value)}>
+                    <option value="">Seleccionar organización...</option>
+                    {organizations.map(o => <option key={o.id} value={o.id}>{o.name}</option>)}
+                  </select>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={async () => {
+                        if (!bulkOrgId) return;
+                        for (const id of selectedIds) {
+                          await authFetch(`/api/prospects/${id}`, { method: 'PATCH', body: JSON.stringify({ organizationId: bulkOrgId }) });
+                        }
+                        await refreshProspects();
+                        setShowBulkOrgAssign(false);
+                        setBulkOrgId('');
+                        setSelectedIds(new Set());
+                      }}
+                      disabled={!bulkOrgId}
+                      className="text-[10px] px-3 py-1.5 bg-slate-900 text-white rounded hover:bg-slate-700 disabled:opacity-50 transition-colors"
+                    >
+                      Asignar
+                    </button>
+                    <button onClick={() => setShowBulkOrgAssign(false)} className="text-[10px] text-slate-400 hover:text-slate-900">Cancelar</button>
+                  </div>
+                </div>
+              )}
+            </div>
             {campaigns.length > 0 && (
               <div className="flex items-center gap-1">
                 <select
@@ -2545,9 +2651,15 @@ export default function App() {
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Nombre</label>
                     <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.name || ''} onChange={e => setEditForm({...editForm, name: e.target.value})} />
                   </div>
-                  <div>
-                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Especialidad</label>
-                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.specialty || ''} onChange={e => setEditForm({...editForm, specialty: e.target.value})} />
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Especialidad</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.specialty || ''} onChange={e => setEditForm({...editForm, specialty: e.target.value})} />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Puesto / Cargo</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.position || ''} onChange={e => setEditForm({...editForm, position: e.target.value})} placeholder="Director, Socio fundador..." />
+                    </div>
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
@@ -2563,13 +2675,37 @@ export default function App() {
                   </div>
                   <div className="grid grid-cols-2 gap-4">
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono</label>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono principal</label>
                       <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.contact || ''} onChange={e => setEditForm({...editForm, contact: e.target.value})} />
                     </div>
                     <div>
-                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email</label>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email principal</label>
                       <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.email || ''} onChange={e => setEditForm({...editForm, email: e.target.value})} />
                     </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono 2</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.phone2 || ''} onChange={e => setEditForm({...editForm, phone2: e.target.value})} placeholder="Opcional" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email 2</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.email2 || ''} onChange={e => setEditForm({...editForm, email2: e.target.value})} placeholder="Opcional" />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfono 3</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.phone3 || ''} onChange={e => setEditForm({...editForm, phone3: e.target.value})} placeholder="Opcional" />
+                    </div>
+                    <div>
+                      <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Email 3</label>
+                      <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.email3 || ''} onChange={e => setEditForm({...editForm, email3: e.target.value})} placeholder="Opcional" />
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Dirección</label>
+                    <input className="w-full px-3 py-2 border border-slate-200 rounded text-sm focus:outline-none focus:border-slate-900" value={editForm.address || ''} onChange={e => setEditForm({...editForm, address: e.target.value})} placeholder="Calle, número, colonia, CP..." />
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Fuente</label>
@@ -2632,6 +2768,12 @@ export default function App() {
                     <span className="text-sm text-slate-900">{selectedProspect.location}</span>
                   </div>
                 </div>
+                {selectedProspect.position && (
+                  <div>
+                    <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Puesto / Cargo</span>
+                    <span className="text-sm text-slate-900">{selectedProspect.position}</span>
+                  </div>
+                )}
 
                 <div className="border-t border-slate-100 pt-4">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Contacto</span>
@@ -2702,6 +2844,35 @@ export default function App() {
                   ) : null;
                 })()}
 
+                {(selectedProspect.address || selectedProspect.phone2 || selectedProspect.email2) && (
+                  <div className="border-t border-slate-100 pt-4 space-y-3">
+                    {selectedProspect.address && (
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Dirección</span>
+                        <span className="text-sm text-slate-900">{selectedProspect.address}</span>
+                      </div>
+                    )}
+                    {(selectedProspect.phone2 || selectedProspect.phone3) && (
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Teléfonos adicionales</span>
+                        <div className="flex flex-col gap-1">
+                          {selectedProspect.phone2 && <a href={`tel:${selectedProspect.phone2}`} className="text-sm text-blue-500 hover:underline flex items-center gap-1"><Phone size={12} /> {selectedProspect.phone2}</a>}
+                          {selectedProspect.phone3 && <a href={`tel:${selectedProspect.phone3}`} className="text-sm text-blue-500 hover:underline flex items-center gap-1"><Phone size={12} /> {selectedProspect.phone3}</a>}
+                        </div>
+                      </div>
+                    )}
+                    {(selectedProspect.email2 || selectedProspect.email3) && (
+                      <div>
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Emails adicionales</span>
+                        <div className="flex flex-col gap-1">
+                          {selectedProspect.email2 && <a href={`mailto:${selectedProspect.email2}`} className="text-sm text-blue-500 hover:underline flex items-center gap-1"><Mail size={12} /> {selectedProspect.email2}</a>}
+                          {selectedProspect.email3 && <a href={`mailto:${selectedProspect.email3}`} className="text-sm text-blue-500 hover:underline flex items-center gap-1"><Mail size={12} /> {selectedProspect.email3}</a>}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
                 {selectedProspect.notes && (
                   <div className="border-t border-slate-100 pt-4">
                     <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-1">Notas</span>
@@ -2725,10 +2896,32 @@ export default function App() {
                     <div className="bg-slate-50 rounded p-3 mb-3 space-y-2">
                       <div>
                         <label className="text-[10px] text-slate-400 block mb-1">Persona relacionada</label>
-                        <select className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={relationshipForm.prospectId2} onChange={e => setRelationshipForm({...relationshipForm, prospectId2: e.target.value})}>
-                          <option value="">Seleccionar...</option>
-                          {prospects.filter(p => p.id !== selectedProspect.id).map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-                        </select>
+                        <input
+                          type="text"
+                          value={relationSearchTerm}
+                          onChange={e => { setRelationSearchTerm(e.target.value); setRelationshipForm({...relationshipForm, prospectId2: ''}); }}
+                          placeholder="Buscar prospecto..."
+                          className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900 mb-1"
+                        />
+                        {relationSearchTerm && !relationshipForm.prospectId2 && (
+                          <div className="max-h-32 overflow-y-auto border border-slate-200 rounded bg-white">
+                            {prospects.filter(p => p.id !== selectedProspect.id && p.name.toLowerCase().includes(relationSearchTerm.toLowerCase())).slice(0, 20).map(p => (
+                              <div
+                                key={p.id}
+                                onClick={() => { setRelationshipForm({...relationshipForm, prospectId2: p.id}); setRelationSearchTerm(p.name); }}
+                                className="px-2 py-1.5 text-xs hover:bg-slate-100 cursor-pointer"
+                              >
+                                {p.name} <span className="text-slate-400">- {p.specialty}</span>
+                              </div>
+                            ))}
+                            {prospects.filter(p => p.id !== selectedProspect.id && p.name.toLowerCase().includes(relationSearchTerm.toLowerCase())).length === 0 && (
+                              <p className="px-2 py-1.5 text-xs text-slate-400 italic">Sin resultados</p>
+                            )}
+                          </div>
+                        )}
+                        {relationshipForm.prospectId2 && (
+                          <p className="text-[10px] text-emerald-600 mt-0.5">Seleccionado: {prospects.find(p => p.id === relationshipForm.prospectId2)?.name}</p>
+                        )}
                       </div>
                       <div className="grid grid-cols-2 gap-2">
                         <div>
@@ -3715,11 +3908,123 @@ export default function App() {
                       </div>
                     )}
 
+                    {/* Addresses */}
+                    <div className="border-t border-slate-100 pt-4">
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          Direcciones ({orgAddresses.length})
+                        </span>
+                        <button
+                          onClick={() => setShowAddAddress(!showAddAddress)}
+                          className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
+                        >
+                          + Agregar
+                        </button>
+                      </div>
+                      {showAddAddress && (
+                        <div className="bg-slate-50 rounded p-3 mb-3 space-y-2">
+                          <div className="grid grid-cols-2 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Etiqueta</label>
+                              <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={addressForm.label} onChange={e => setAddressForm({...addressForm, label: e.target.value})} placeholder="Oficina principal, Sucursal..." />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Calle y número</label>
+                              <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={addressForm.street} onChange={e => setAddressForm({...addressForm, street: e.target.value})} placeholder="Av. Reforma 123, Piso 4" />
+                            </div>
+                          </div>
+                          <div className="grid grid-cols-3 gap-2">
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Ciudad</label>
+                              <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={addressForm.city} onChange={e => setAddressForm({...addressForm, city: e.target.value})} />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">Estado</label>
+                              <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={addressForm.state} onChange={e => setAddressForm({...addressForm, state: e.target.value})} />
+                            </div>
+                            <div>
+                              <label className="text-[10px] text-slate-400 block mb-1">C.P.</label>
+                              <input className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900" value={addressForm.zip} onChange={e => setAddressForm({...addressForm, zip: e.target.value})} />
+                            </div>
+                          </div>
+                          <div className="flex gap-2">
+                            <button onClick={() => handleAddOrgAddress(selectedOrg!.id)} className="btn-primary text-[10px] px-3 py-1.5">Agregar dirección</button>
+                            <button onClick={() => setShowAddAddress(false)} className="text-[10px] text-slate-400 hover:text-slate-900">Cancelar</button>
+                          </div>
+                        </div>
+                      )}
+                      {orgAddresses.length > 0 ? (
+                        <div className="space-y-2">
+                          {orgAddresses.map(addr => (
+                            <div key={addr.id} className="flex items-start justify-between p-3 bg-slate-50 rounded group/a">
+                              <div>
+                                {addr.label && <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-0.5">{addr.label}</p>}
+                                <p className="text-xs text-slate-900">{addr.street}</p>
+                                <p className="text-xs text-slate-500">{[addr.city, addr.state, addr.zip].filter(Boolean).join(', ')}</p>
+                              </div>
+                              <button
+                                onClick={() => handleDeleteOrgAddress(selectedOrg!.id, addr.id)}
+                                className="p-1 text-slate-300 hover:text-red-500 opacity-0 group-hover/a:opacity-100 transition-all"
+                              >
+                                <X size={12} />
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-slate-400 italic">Sin direcciones registradas</p>
+                      )}
+                    </div>
+
                     {/* Members */}
                     <div className="border-t border-slate-100 pt-4">
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-3">
-                        Miembros ({selectedOrg.members?.length || 0})
-                      </span>
+                      <div className="flex items-center justify-between mb-3">
+                        <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">
+                          Miembros ({selectedOrg.members?.length || 0})
+                        </span>
+                        <button
+                          onClick={() => setShowAddOrgMember(!showAddOrgMember)}
+                          className="text-[10px] font-bold text-slate-400 hover:text-slate-900 uppercase tracking-widest transition-colors"
+                        >
+                          + Agregar
+                        </button>
+                      </div>
+                      {showAddOrgMember && (
+                        <div className="bg-slate-50 rounded p-3 mb-3 space-y-2">
+                          <input
+                            type="text"
+                            value={orgMemberSearch}
+                            onChange={e => setOrgMemberSearch(e.target.value)}
+                            placeholder="Buscar prospecto para agregar..."
+                            className="w-full px-2 py-1.5 border border-slate-200 rounded text-xs focus:outline-none focus:border-slate-900"
+                          />
+                          {orgMemberSearch && (
+                            <div className="max-h-40 overflow-y-auto border border-slate-200 rounded bg-white">
+                              {prospects
+                                .filter(p => !p.organizationId && p.name.toLowerCase().includes(orgMemberSearch.toLowerCase()))
+                                .slice(0, 15)
+                                .map(p => (
+                                  <div
+                                    key={p.id}
+                                    onClick={async () => {
+                                      await authFetch(`/api/prospects/${p.id}`, { method: 'PATCH', body: JSON.stringify({ organizationId: selectedOrg!.id }) });
+                                      await fetchOrgDetail(selectedOrg!.id);
+                                      await refreshProspects();
+                                      setOrgMemberSearch('');
+                                    }}
+                                    className="px-2 py-1.5 text-xs hover:bg-slate-100 cursor-pointer flex items-center justify-between"
+                                  >
+                                    <span>{p.name} <span className="text-slate-400">- {p.specialty}</span></span>
+                                    <Plus size={12} className="text-slate-400" />
+                                  </div>
+                                ))}
+                              {prospects.filter(p => !p.organizationId && p.name.toLowerCase().includes(orgMemberSearch.toLowerCase())).length === 0 && (
+                                <p className="px-2 py-1.5 text-xs text-slate-400 italic">Sin resultados</p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       {selectedOrg.members && selectedOrg.members.length > 0 ? (
                         <div className="space-y-2">
                           {selectedOrg.members.map(m => (
