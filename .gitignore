@@ -8,3 +8,4 @@ coverage/
 !.env.example
 *.db
 *.db.bak-*
+*.db-journal

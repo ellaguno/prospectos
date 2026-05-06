@@ -42,6 +42,23 @@ const LEAD_SCHEMA = {
 
 const VALID_CATEGORIES = ['Salud', 'Legal', 'Inversión', 'Arquitectura', 'Profesionales', 'Otros'];
 
+// Compute initial contactQuality from contact/email (mirrors frontend detectContactQuality).
+function detectContactQuality(contact: string, email: string): 'direct' | 'generic' | 'pending' {
+  const c = (contact || '').trim();
+  const e = (email || '').trim();
+  if (!c && (!e || e.toUpperCase() === 'N/A')) return 'pending';
+  const genericPrefixes = ['info@', 'contacto@', 'atencion@', 'recepcion@', 'hola@', 'admin@', 'contact@', 'ventas@', 'general@', 'oficina@'];
+  const eLower = e.toLowerCase();
+  const isGenericEmail = e ? genericPrefixes.some(p => eLower.startsWith(p)) || e.toUpperCase() === 'N/A' : false;
+  const hasRealEmail = e && !isGenericEmail;
+  const cLower = c.toLowerCase();
+  const isGenericPhone = c ? (cLower.includes('ext') || cLower.includes('conmutador') || c.includes('0000') || cLower.includes('no disponible')) : false;
+  const hasRealPhone = c && !isGenericPhone;
+  if (hasRealPhone && hasRealEmail) return 'direct';
+  if (c || hasRealEmail) return 'generic';
+  return 'pending';
+}
+
 function classifyProspect(name: string, specialty: string, aiCategory: string): string {
   const text = (specialty + ' ' + name + ' ' + aiCategory).toLowerCase();
   // Check Legal FIRST to avoid notarios being caught by salud keywords
@@ -52,6 +69,91 @@ function classifyProspect(name: string, specialty: string, aiCategory: string): 
   if (text.includes('profesional') || text.includes('especialista') || text.includes('consult') || text.includes('contador') || text.includes('project manager')) return 'Profesionales';
   if (VALID_CATEGORIES.includes(aiCategory)) return aiCategory;
   return 'Otros';
+}
+
+// --- Organization vs Person classification ---
+// Returns { isOrg, type } when the name looks like an organization rather than a person.
+// Conservative: only flags when there's a clear corporate/institutional signal.
+function looksLikeOrganization(name: string, specialty?: string): { isOrg: boolean; type: string } {
+  const n = (name || '').trim();
+  if (!n) return { isOrg: false, type: '' };
+  const lower = n.toLowerCase();
+  const spec = (specialty || '').toLowerCase();
+
+  // Person markers — if any present, treat as person
+  if (/^(dr\.?|dra\.?|lic\.?|ing\.?|arq\.?|c\.?p\.?|mtr[oa]\.?|prof\.?)\s+/i.test(n)) {
+    return { isOrg: false, type: '' };
+  }
+
+  // Domain-like names (e.g., "1SEGUROS.MX", "empresa.com")
+  if (/\.(com|mx|net|org|com\.mx|gob\.mx|edu\.mx|info|biz|io|co)$/i.test(n.replace(/\s+/g, ''))) {
+    return { isOrg: true, type: 'empresa' };
+  }
+
+  // Corporate suffixes
+  if (/\b(s\.?\s*a\.?(\s*de\s*c\.?\s*v\.?)?|s\.?\s*c\.?|s\.?\s*r\.?\s*l\.?|s\.?\s*de\s*r\.?\s*l\.?|inc\.?|corp\.?|ltd\.?|llc\.?|gmbh|a\.?\s*c\.?)\b/i.test(n)) {
+    return { isOrg: true, type: 'empresa' };
+  }
+
+  // Institutional / sectoral keywords as standalone words
+  const sectorMap: Array<[RegExp, string]> = [
+    [/\b(hospital|clínica|clinica|sanatorio|centro\s+médico|centro\s+medico|laboratorio)\b/i, 'clinica'],
+    [/\b(despacho|bufete|notar[íi]a|notaria)\b/i, 'despacho'],
+    [/\b(universidad|instituto|tecnol[oó]gico|colegio|escuela|facultad)\b/i, 'universidad'],
+    [/\b(asociaci[oó]n|fundaci[oó]n|c[aá]mara|colegio\s+de|cooperativa|sindicato)\b/i, 'asociacion'],
+    [/\b(secretar[íi]a\s+de|gobierno|municipio|ayuntamiento|delegaci[oó]n|fiscal[íi]a|congreso)\b/i, 'gobierno'],
+    [/\b(grupo|corporativo|holding|consorcio|constructora|inmobiliaria|desarrolladora|consultor[íi]a|consultoria|aseguradora|seguros|financiera|banco|automotriz|farmac[eé]utica)\b/i, 'empresa'],
+    [/\b(arquitectos|ingenieros|consultores|asociados|abogados|contadores|hermanos)\s*$/i, 'despacho'],
+    [/\b(restaurante|hotel|tienda|boutique|farmacia|distribuidora|comercializadora)\b/i, 'empresa'],
+  ];
+  for (const [re, t] of sectorMap) if (re.test(n)) return { isOrg: true, type: t };
+
+  // Specialty hints when name itself is ambiguous
+  if (/\b(empresa|compa[ñn][íi]a|firma|despacho|hospital|cl[íi]nica)\b/i.test(spec)) {
+    // Specialty says it IS an organization; treat name as org
+    return { isOrg: true, type: 'empresa' };
+  }
+
+  // Fully-uppercase multi-token brand-style names without spaces typical of names
+  // e.g., "REYRO ARQUITECTOS" already caught above; "1SEGUROS" alone isn't enough.
+  // Names starting with a digit followed by uppercase letters are usually brands
+  if (/^\d+[A-ZÁÉÍÓÚÑ]{2,}/.test(n)) return { isOrg: true, type: 'empresa' };
+
+  return { isOrg: false, type: '' };
+}
+
+// --- URL resolution / validation ---
+// Resolves vertexaisearch grounding-redirect URLs to their final destination
+// and returns null if the destination errors out. For non-redirect URLs, returns
+// the input if reachable, null if the host clearly errors.
+async function resolveRedirectUrl(rawUrl: string, opts: { validate?: boolean } = {}): Promise<string | null> {
+  if (!rawUrl || !/^https?:\/\//i.test(rawUrl)) return rawUrl || null;
+  const isRedirect = /vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i.test(rawUrl);
+  const validate = opts.validate ?? isRedirect;
+  if (!validate) return rawUrl;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 12000);
+    const res = await fetch(rawUrl, {
+      redirect: 'follow',
+      method: 'GET',
+      headers: {
+        "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Accept-Language": "es-MX,es;q=0.9",
+      },
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    const finalUrl = (res as any).url || rawUrl;
+    if (!res.ok) return null;
+    // Detect "page not found" looking pages by length / status text
+    if (res.status >= 400) return null;
+    // If we ended up still on the redirect host, treat as failed
+    if (/vertexaisearch\.cloud\.google\.com\/grounding-api-redirect\//i.test(finalUrl)) return null;
+    return finalUrl;
+  } catch {
+    return null;
+  }
 }
 
 // Normalize: respect canonical categories, otherwise classify by text.
@@ -506,6 +608,18 @@ async function startServer() {
     }
   });
 
+  // Find an organization by case-insensitive name for a user, or create it.
+  function getOrCreateOrgIdByName(userId: string, name: string, type: string, opts: { website?: string; phone?: string; email?: string; location?: string } = {}): string {
+    const trimmed = (name || '').trim();
+    if (!trimmed) return '';
+    const found = db.prepare("SELECT id FROM organizations WHERE userId = ? AND LOWER(name) = LOWER(?)").get(userId, trimmed) as any;
+    if (found?.id) return found.id;
+    const id = Math.random().toString(36).substr(2, 9);
+    db.prepare("INSERT INTO organizations (id, name, type, location, website, phone, email, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, trimmed, type || '', opts.location || '', opts.website || '', opts.phone || '', opts.email || '', userId);
+    return id;
+  }
+
   // Extract URL from source or email domain (exclude generic email services)
   function extractUrlFromSource(source?: string, email?: string): string {
     const genericDomains = ['gmail.com', 'hotmail.com', 'outlook.com', 'yahoo.com', 'live.com', 'msn.com', 'icloud.com', 'aol.com', 'protonmail.com', 'mail.com', 'zoho.com', 'yandex.com', 'gmx.com', 'tutanota.com'];
@@ -600,21 +714,39 @@ async function startServer() {
       return res.json({ message: "No hay prospectos nuevos (todos duplicados)", duplicates: prospects.length });
     }
 
-    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+    const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId, contactQuality) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+
+    let orgsCreated = 0;
+    let prospectsSaved = 0;
 
     const transaction = db.transaction((leads: any[]) => {
       for (const p of leads) {
+        const rawUrl = p.url || extractUrlFromSource(p.source, p.email);
+        const orgCheck = looksLikeOrganization(p.name, p.specialty);
+        if (orgCheck.isOrg) {
+          // Save as organization rather than as a prospect
+          const before = db.prepare("SELECT id FROM organizations WHERE userId = ? AND LOWER(name) = LOWER(?)").get(userId, p.name) as any;
+          getOrCreateOrgIdByName(userId, p.name, orgCheck.type, {
+            website: rawUrl, phone: p.contact || '', email: p.email || '', location: p.location || '',
+          });
+          if (!before?.id) orgsCreated++;
+          continue;
+        }
         const id = Math.random().toString(36).substr(2, 9);
-        const url = p.url || extractUrlFromSource(p.source, p.email);
         const category = normalizeCategory(p.category, p.name, p.specialty);
-        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, p.notes || '', url, userId);
+        const quality = p.contactQuality || detectContactQuality(p.contact || '', p.email || '');
+        insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, p.notes || '', rawUrl, userId, quality);
+        prospectsSaved++;
       }
     });
 
     try {
       transaction(uniqueLeads);
       const skipped = prospects.length - uniqueLeads.length;
-      res.json({ message: `${uniqueLeads.length} guardado(s)${skipped > 0 ? `, ${skipped} duplicado(s) omitido(s)` : ''}` });
+      // Async URL resolution (best-effort, fire-and-forget) for redirect URLs just inserted
+      resolveRedirectUrlsForUser(userId).catch(() => {});
+      const orgPart = orgsCreated > 0 ? `, ${orgsCreated} organización(es) creada(s)` : '';
+      res.json({ message: `${prospectsSaved} guardado(s)${orgPart}${skipped > 0 ? `, ${skipped} duplicado(s) omitido(s)` : ''}` });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }
@@ -2075,6 +2207,93 @@ Responde ÚNICAMENTE con JSON válido:
     }
   });
 
+  // --- URL maintenance: resolve grounding-redirect URLs and drop broken ones ---
+  // Picks at most `limit` prospects with vertexaisearch redirect URLs, follows the
+  // redirect to its final destination, and either updates or clears the URL.
+  async function resolveRedirectUrlsForUser(userId: string, limit = 30): Promise<{ resolved: number; cleared: number; checked: number }> {
+    const rows = db.prepare(
+      "SELECT id, url FROM prospects WHERE userId = ? AND url LIKE '%vertexaisearch.cloud.google.com/grounding-api-redirect/%' LIMIT ?"
+    ).all(userId, limit) as any[];
+    let resolved = 0, cleared = 0;
+    for (const r of rows) {
+      const finalUrl = await resolveRedirectUrl(r.url, { validate: true });
+      if (finalUrl) {
+        db.prepare("UPDATE prospects SET url = ? WHERE id = ? AND userId = ?").run(finalUrl, r.id, userId);
+        resolved++;
+      } else {
+        db.prepare("UPDATE prospects SET url = '' WHERE id = ? AND userId = ?").run(r.id, userId);
+        cleared++;
+      }
+    }
+    return { resolved, cleared, checked: rows.length };
+  }
+
+  // POST /api/maintenance/resolve-urls — process redirect URLs in batches
+  app.post("/api/maintenance/resolve-urls", async (req, res) => {
+    const userId = (req as any).user.id;
+    const limit = Math.min(500, Math.max(1, parseInt((req.body?.limit ?? req.query.limit) as string) || 50));
+    try {
+      const result = await resolveRedirectUrlsForUser(userId, limit);
+      const remaining = (db.prepare(
+        "SELECT COUNT(*) as c FROM prospects WHERE userId = ? AND url LIKE '%vertexaisearch.cloud.google.com/grounding-api-redirect/%'"
+      ).get(userId) as any).c;
+      res.json({
+        message: `${result.checked} revisado(s): ${result.resolved} resuelto(s), ${result.cleared} eliminado(s). ${remaining} pendiente(s).`,
+        ...result, remaining,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // POST /api/maintenance/migrate-orgs — scan existing prospects and convert
+  // those that look like organizations into rows in the organizations table.
+  app.post("/api/maintenance/migrate-orgs", (req, res) => {
+    const userId = (req as any).user.id;
+    const dryRun = req.body?.dryRun === true;
+    const limit = Math.min(5000, Math.max(1, parseInt((req.body?.limit) as string) || 5000));
+    try {
+      const candidates = db.prepare(
+        "SELECT id, name, specialty, location, contact, email, url FROM prospects WHERE userId = ? AND (organizationId IS NULL OR organizationId = '') LIMIT ?"
+      ).all(userId, limit) as any[];
+
+      const matches = candidates
+        .map(p => ({ p, ...looksLikeOrganization(p.name, p.specialty) }))
+        .filter(x => x.isOrg);
+
+      if (dryRun) {
+        return res.json({
+          message: `${matches.length} prospecto(s) lucen como organización (dry-run)`,
+          count: matches.length,
+          sample: matches.slice(0, 25).map(m => ({ id: m.p.id, name: m.p.name, type: m.type })),
+        });
+      }
+
+      let orgsCreated = 0;
+      let migrated = 0;
+      const tx = db.transaction(() => {
+        for (const m of matches) {
+          const before = db.prepare("SELECT id FROM organizations WHERE userId = ? AND LOWER(name) = LOWER(?)").get(userId, m.p.name) as any;
+          const orgId = getOrCreateOrgIdByName(userId, m.p.name, m.type, {
+            website: m.p.url || '', phone: m.p.contact || '', email: m.p.email || '', location: m.p.location || '',
+          });
+          if (!before?.id) orgsCreated++;
+          // Remove the prospect row (it represented the organization, not a person)
+          db.prepare("DELETE FROM prospects WHERE id = ? AND userId = ?").run(m.p.id, userId);
+          migrated++;
+        }
+      });
+      tx();
+
+      res.json({
+        message: `${migrated} prospecto(s) convertidos a organizaciones, ${orgsCreated} nueva(s) organización(es)`,
+        migrated, orgsCreated,
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // --- Continuous Discovery (persistent) ---
   const runningJobs = new Map<string, { active: boolean }>();
 
@@ -2115,17 +2334,32 @@ Responde ÚNICAMENTE con JSON válido:
             const newLeads = result.leads.filter((l: any) => !existingNames.has(l.name.toLowerCase().trim()));
 
             if (newLeads.length > 0) {
-              const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+              const insert = db.prepare(`INSERT INTO prospects (id, name, specialty, location, contact, email, category, source, notes, url, userId, contactQuality) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+              let orgCount = 0;
+              let personCount = 0;
               const tx = db.transaction((leads: any[]) => {
                 for (const p of leads) {
+                  const rawUrl = extractUrlFromSource(p.source, p.email);
+                  const orgCheck = looksLikeOrganization(p.name, p.specialty);
+                  if (orgCheck.isOrg) {
+                    const before = db.prepare("SELECT id FROM organizations WHERE userId = ? AND LOWER(name) = LOWER(?)").get(userId, p.name) as any;
+                    getOrCreateOrgIdByName(userId, p.name, orgCheck.type, {
+                      website: rawUrl, phone: p.contact || '', email: p.email || '', location: p.location || '',
+                    });
+                    if (!before?.id) orgCount++;
+                    continue;
+                  }
                   const id = Math.random().toString(36).substr(2, 9);
-                  const url = extractUrlFromSource(p.source, p.email);
                   const category = classifyProspect(p.name, p.specialty || '', p.category || '');
-                  insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, '', url, userId);
+                  const quality = detectContactQuality(p.contact || '', p.email || '');
+                  insert.run(id, p.name, p.specialty, p.location, p.contact, p.email, category, p.source, '', rawUrl, userId, quality);
+                  personCount++;
                 }
               });
               tx(newLeads);
-              console.log(`[Continuo] Ronda ${round} (${location}): ${newLeads.length} nuevos prospectos guardados`);
+              console.log(`[Continuo] Ronda ${round} (${location}): ${personCount} prospectos, ${orgCount} organizaciones`);
+              // Resolve redirect URLs in background
+              resolveRedirectUrlsForUser(userId).catch((err) => console.warn(`[Continuo] URL resolve error: ${err.message}`));
             }
 
             // Qualify + OSINT for pending (process more per round)

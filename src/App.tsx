@@ -557,6 +557,63 @@ export default function App() {
     }
   };
 
+  const [isMigratingOrgs, setIsMigratingOrgs] = useState(false);
+  const handleMigrateOrgs = async () => {
+    setIsMigratingOrgs(true);
+    setDetectOrgResult('');
+    try {
+      const dryRes = await authFetch('/api/maintenance/migrate-orgs', { method: 'POST', body: JSON.stringify({ dryRun: true }) });
+      const dry = await dryRes.json();
+      const count = dry.count || 0;
+      if (count === 0) {
+        setDetectOrgResult('No se encontraron prospectos que parezcan organizaciones.');
+        return;
+      }
+      const sample = (dry.sample || []).slice(0, 8).map((s: any) => `• ${s.name} (${s.type})`).join('\n');
+      const ok = window.confirm(`Se detectaron ${count} prospecto(s) que parecen organizaciones.\n\nEjemplos:\n${sample}\n\n¿Convertir todos a organizaciones? (los prospectos correspondientes serán eliminados de la lista de personas)`);
+      if (!ok) {
+        setDetectOrgResult(`Cancelado. ${count} candidato(s) detectado(s).`);
+        return;
+      }
+      const res = await authFetch('/api/maintenance/migrate-orgs', { method: 'POST', body: JSON.stringify({}) });
+      const data = await res.json();
+      setDetectOrgResult(data.message || 'Migración completada');
+      fetchOrganizations();
+      refreshProspects();
+    } catch {
+      setDetectOrgResult('Error en la migración');
+    } finally {
+      setIsMigratingOrgs(false);
+    }
+  };
+
+  const [isResolvingUrls, setIsResolvingUrls] = useState(false);
+  const handleResolveUrls = async () => {
+    setIsResolvingUrls(true);
+    setDetectOrgResult('');
+    try {
+      let totalResolved = 0;
+      let totalCleared = 0;
+      let pages = 0;
+      // Iterate in batches until remaining = 0 or we've done 50 batches (cap)
+      while (pages < 50) {
+        const res = await authFetch('/api/maintenance/resolve-urls', { method: 'POST', body: JSON.stringify({ limit: 100 }) });
+        const data = await res.json();
+        totalResolved += data.resolved || 0;
+        totalCleared += data.cleared || 0;
+        pages++;
+        setDetectOrgResult(`Procesando URLs... lote ${pages}: ${totalResolved} resuelta(s), ${totalCleared} eliminada(s), ${data.remaining ?? 0} pendiente(s)`);
+        if (!data.remaining || data.remaining === 0 || data.checked === 0) break;
+      }
+      setDetectOrgResult(`URLs procesadas: ${totalResolved} resuelta(s), ${totalCleared} eliminada(s).`);
+      refreshProspects();
+    } catch {
+      setDetectOrgResult('Error resolviendo URLs');
+    } finally {
+      setIsResolvingUrls(false);
+    }
+  };
+
   // Hierarchy state
   const [orgHierarchy, setOrgHierarchy] = useState<any[]>([]);
   const [isDiscoveringHierarchy, setIsDiscoveringHierarchy] = useState(false);
@@ -1224,7 +1281,7 @@ export default function App() {
     const rows: any[][] = [];
 
     for (const p of sorted) {
-      const q = p.contactQuality || detectContactQuality(p.contact, p.email || '');
+      const q = (p.contactQuality && p.contactQuality !== 'pending' ? p.contactQuality : detectContactQuality(p.contact, p.email || ''));
       rows.push([
         p.name,
         p.specialty,
@@ -1541,6 +1598,24 @@ export default function App() {
                 >
                   {isDetectingOrgs ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={14} />}
                   {isDetectingOrgs ? 'Detectando...' : 'Detectar con AI'}
+                </button>
+                <button
+                  onClick={handleMigrateOrgs}
+                  disabled={isMigratingOrgs}
+                  title="Convierte prospectos que parecen empresas/instituciones (Hospital, S.A., 1SEGUROS.MX, REYRO Arquitectos…) en organizaciones"
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  {isMigratingOrgs ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={14} />}
+                  {isMigratingOrgs ? 'Migrando...' : 'Migrar orgs (heurística)'}
+                </button>
+                <button
+                  onClick={handleResolveUrls}
+                  disabled={isResolvingUrls}
+                  title="Resuelve URLs de vertexaisearch a su destino real y elimina las que dan error"
+                  className="btn-secondary flex items-center gap-2 text-xs"
+                >
+                  {isResolvingUrls ? <div className="w-3 h-3 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" /> : <Sparkles size={14} />}
+                  {isResolvingUrls ? 'Resolviendo...' : 'Resolver URLs'}
                 </button>
                 <button
                   onClick={() => setShowOrganizations(false)}
@@ -2019,7 +2094,7 @@ export default function App() {
                       </td>
                       <td className="px-4 py-4 text-center">
                         {(() => {
-                          const q = prospect.contactQuality || detectContactQuality(prospect.contact, prospect.email || '');
+                          const q = (prospect.contactQuality && prospect.contactQuality !== 'pending' ? prospect.contactQuality : detectContactQuality(prospect.contact, prospect.email || ''));
                           return (
                             <div className={`w-3 h-3 rounded-full mx-auto ${
                               q === 'qualified' ? 'bg-blue-500' :
@@ -2778,7 +2853,7 @@ export default function App() {
                 <div className="border-t border-slate-100 pt-4">
                   <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest block mb-2">Contacto</span>
                   {(() => {
-                    const quality = selectedProspect.contactQuality || detectContactQuality(selectedProspect.contact, selectedProspect.email || '');
+                    const quality = (selectedProspect.contactQuality && selectedProspect.contactQuality !== 'pending' ? selectedProspect.contactQuality : detectContactQuality(selectedProspect.contact, selectedProspect.email || ''));
                     return (
                       <div className={`p-3 rounded border ${
                         quality === 'qualified' ? 'border-blue-200 bg-blue-50' :
