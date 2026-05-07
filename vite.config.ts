@@ -16,6 +16,10 @@ export default defineConfig(({mode}) => {
     },
     server: {
       proxy: {
+        '/prospectos/api': {
+          target: 'http://localhost:3005',
+          rewrite: (path) => path.replace(/^\/prospectos/, ''),
+        },
         '/api': 'http://localhost:3005',
       },
       // HMR is disabled in AI Studio via DISABLE_HMR env var.

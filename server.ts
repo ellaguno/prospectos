@@ -99,10 +99,13 @@ function looksLikeOrganization(name: string, specialty?: string): { isOrg: boole
   const sectorMap: Array<[RegExp, string]> = [
     [/\b(hospital|clínica|clinica|sanatorio|centro\s+médico|centro\s+medico|laboratorio)\b/i, 'clinica'],
     [/\b(despacho|bufete|notar[íi]a|notaria)\b/i, 'despacho'],
+    [/\b(firma\s+de\s+abogados|firma\s+legal|firma\s+jur[íi]dica)\b/i, 'despacho'],
     [/\b(universidad|instituto|tecnol[oó]gico|colegio|escuela|facultad)\b/i, 'universidad'],
     [/\b(asociaci[oó]n|fundaci[oó]n|c[aá]mara|colegio\s+de|cooperativa|sindicato)\b/i, 'asociacion'],
     [/\b(secretar[íi]a\s+de|gobierno|municipio|ayuntamiento|delegaci[oó]n|fiscal[íi]a|congreso)\b/i, 'gobierno'],
     [/\b(grupo|corporativo|holding|consorcio|constructora|inmobiliaria|desarrolladora|consultor[íi]a|consultoria|aseguradora|seguros|financiera|banco|automotriz|farmac[eé]utica)\b/i, 'empresa'],
+    [/\b(consulting|solutions|services|partners|advisors|agency|studio|labs?|tech)\b/i, 'empresa'],
+    [/\b(asesores|asesor[íi]a|gestora|promotora|integradora|marketing|digital)\b/i, 'empresa'],
     [/\b(arquitectos|ingenieros|consultores|asociados|abogados|contadores|hermanos)\s*$/i, 'despacho'],
     [/\b(restaurante|hotel|tienda|boutique|farmacia|distribuidora|comercializadora)\b/i, 'empresa'],
   ];
@@ -455,6 +458,14 @@ async function startServer() {
 
   app.use(express.json());
   app.use(cors());
+
+  // Strip /prospectos prefix so dev matches production URL structure
+  app.use((req, _res, next) => {
+    if (req.url.startsWith('/prospectos/api/')) {
+      req.url = req.url.replace('/prospectos', '');
+    }
+    next();
+  });
 
   // --- Auth endpoints (no middleware) ---
   app.post("/api/auth/login", (req, res) => {
@@ -1019,6 +1030,52 @@ Responde ÚNICAMENTE con JSON válido:
       const placeholders = ids.map(() => '?').join(',');
       db.prepare(`DELETE FROM prospects WHERE id IN (${placeholders}) AND userId = ?`).run(...ids, userId);
       res.json({ message: `${ids.length} prospecto(s) eliminado(s)` });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Convert prospect to organization ---
+  app.post("/api/prospects/:id/convert-to-org", (req, res) => {
+    const userId = (req as any).user.id;
+    const { id } = req.params;
+    const { orgType } = req.body; // optional override for organization type
+    try {
+      const prospect = db.prepare("SELECT * FROM prospects WHERE id = ? AND userId = ?").get(id, userId) as any;
+      if (!prospect) return res.status(404).json({ error: "Prospecto no encontrado" });
+
+      const orgCheck = looksLikeOrganization(prospect.name, prospect.specialty);
+      const type = orgType || orgCheck.type || 'empresa';
+
+      // Create or find the organization
+      const existingOrg = db.prepare("SELECT id FROM organizations WHERE userId = ? AND LOWER(name) = LOWER(?)").get(userId, prospect.name) as any;
+      const orgId = getOrCreateOrgIdByName(userId, prospect.name, type, {
+        website: prospect.url || '', phone: prospect.contact || '', email: prospect.email || '', location: prospect.location || '',
+      });
+
+      // If org already existed, update fields that may be richer in the prospect
+      if (existingOrg?.id) {
+        const org = db.prepare("SELECT * FROM organizations WHERE id = ?").get(existingOrg.id) as any;
+        const updates: string[] = [];
+        const vals: any[] = [];
+        if (!org.phone && prospect.contact) { updates.push("phone = ?"); vals.push(prospect.contact); }
+        if (!org.email && prospect.email) { updates.push("email = ?"); vals.push(prospect.email); }
+        if (!org.website && prospect.url) { updates.push("website = ?"); vals.push(prospect.url); }
+        if (!org.location && prospect.location) { updates.push("location = ?"); vals.push(prospect.location); }
+        if (updates.length > 0) {
+          vals.push(existingOrg.id);
+          db.prepare(`UPDATE organizations SET ${updates.join(", ")} WHERE id = ?`).run(...vals);
+        }
+      }
+
+      // Delete the prospect
+      db.prepare("DELETE FROM prospects WHERE id = ? AND userId = ?").run(id, userId);
+
+      res.json({
+        message: `"${prospect.name}" convertido a organización`,
+        organizationId: orgId,
+        created: !existingOrg?.id,
+      });
     } catch (err: any) {
       res.status(500).json({ error: err.message });
     }

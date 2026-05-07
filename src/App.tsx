@@ -1157,6 +1157,20 @@ export default function App() {
     }
   };
 
+  const handleConvertToOrg = async (prospect: Prospect) => {
+    if (!confirm(`¿Convertir "${prospect.name}" en organización? El contacto será eliminado y se creará como organización.`)) return;
+    try {
+      const resp = await authFetch(`/api/prospects/${prospect.id}/convert-to-org`, { method: 'POST', body: JSON.stringify({}) });
+      const data = await resp.json();
+      await refreshProspects();
+      await fetchOrganizations();
+      setSelectedProspect(null);
+      alert(data.message || 'Convertido exitosamente');
+    } catch (error) {
+      console.error("Convert to org failed", error);
+    }
+  };
+
   const handleDeleteProspect = async (prospect: Prospect) => {
     if (!confirm(`¿Eliminar "${prospect.name}"?`)) return;
     try {
@@ -1971,6 +1985,26 @@ export default function App() {
             </button>
             <button onClick={handleBulkVCF} className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-white/10 hover:bg-white/20 rounded transition-colors">
               <Contact size={12} /> Exportar VCF
+            </button>
+            <button
+              onClick={async () => {
+                const count = selectedIds.size;
+                if (!confirm(`¿Convertir ${count} prospecto(s) en organizaciones? Se eliminarán como contactos y se crearán como organizaciones.`)) return;
+                let converted = 0;
+                for (const id of selectedIds) {
+                  try {
+                    const r = await authFetch(`/api/prospects/${id}/convert-to-org`, { method: 'POST', body: JSON.stringify({}) });
+                    if (r.ok) converted++;
+                  } catch {}
+                }
+                await refreshProspects();
+                await fetchOrganizations();
+                setSelectedIds(new Set());
+                alert(`${converted} prospecto(s) convertido(s) a organización`);
+              }}
+              className="text-xs flex items-center gap-1.5 px-3 py-1.5 bg-amber-500/20 hover:bg-amber-500/40 rounded transition-colors"
+            >
+              <Building2 size={12} /> Convertir en Org.
             </button>
             <div className="relative">
               <button
@@ -3085,6 +3119,13 @@ export default function App() {
                     ) : (
                       <><RefreshCw size={14} /> OSINT</>
                     )}
+                  </button>
+                  <button
+                    onClick={() => handleConvertToOrg(selectedProspect)}
+                    title="Convertir en Organización"
+                    className="flex items-center justify-center gap-2 text-xs px-3 py-2 border border-amber-200 text-amber-600 hover:bg-amber-50 rounded transition-colors"
+                  >
+                    <Building2 size={14} />
                   </button>
                   <button
                     onClick={() => handleDeleteProspect(selectedProspect)}

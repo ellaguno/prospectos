@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>slapps.nombrate.com</title>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  body{
+    font-family:'Segoe UI',system-ui,-apple-system,sans-serif;
+    min-height:100vh;
+    display:flex;align-items:center;justify-content:center;
+    background:#0f172a;
+    color:#e2e8f0;
+  }
+  .container{
+    width:100%;max-width:520px;
+    padding:2.5rem 1.5rem;
+  }
+  h1{
+    font-size:1.1rem;font-weight:400;
+    letter-spacing:.08em;text-transform:uppercase;
+    color:#64748b;
+    margin-bottom:.5rem;
+  }
+  .tagline{
+    font-size:.9rem;color:#475569;
+    margin-bottom:2.5rem;
+    padding-bottom:1.5rem;
+    border-bottom:1px solid #1e293b;
+  }
+  .apps{list-style:none;display:flex;flex-direction:column;gap:.75rem}
+  .apps a{
+    display:flex;align-items:center;gap:1rem;
+    padding:1rem 1.25rem;
+    border-radius:12px;
+    background:#1e293b;
+    color:#e2e8f0;
+    text-decoration:none;
+    transition:background .2s,transform .15s;
+  }
+  .apps a:hover{
+    background:#334155;
+    transform:translateX(4px);
+  }
+  .icon{
+    width:40px;height:40px;
+    border-radius:10px;
+    display:flex;align-items:center;justify-content:center;
+    font-size:1.2rem;
+    flex-shrink:0;
+  }
+  .label{display:flex;flex-direction:column}
+  .label span:first-child{font-weight:600;font-size:.95rem}
+  .label span:last-child{font-size:.75rem;color:#64748b;margin-top:2px}
+
+  .ic-prospectos{background:#1d4ed8}
+  .ic-tax{background:#059669}
+  .ic-conv{background:#7c3aed}
+  .ic-demo{background:#a855f7}
+  .ic-familia{background:#e11d48}
+  .ic-iure{background:#d97706}
+
+  .arrow{
+    margin-left:auto;color:#475569;
+    transition:color .2s;font-size:1.1rem;
+  }
+  .apps a:hover .arrow{color:#94a3b8}
+
+  footer{
+    margin-top:2.5rem;padding-top:1rem;
+    border-top:1px solid #1e293b;
+    text-align:center;font-size:.75rem;color:#334155;
+  }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>slapps.nombrate.com</h1>
+  <p class="tagline">Servidor activo &middot; Apps</p>
+  <ul class="apps">
+    <li><a href="/prospectos">
+      <div class="icon ic-prospectos">P</div>
+      <div class="label"><span>Prospectos</span><span>Gestión de prospectos</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+    <li><a href="/sesolibre-tax">
+      <div class="icon ic-tax">$</div>
+      <div class="label"><span>Impuestos</span><span>Sesolibre Tax</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+    <li><a href="https://conversaciones.concurrir.com">
+      <div class="icon ic-conv">C</div>
+      <div class="label"><span>Conversaciones</span><span>conversaciones.concurrir.com</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+    <li><a href="https://conversaciones.concurrir.com/demo/seguros">
+      <div class="icon ic-demo">S</div>
+      <div class="label"><span>Demo Seguros</span><span>Conversaciones demo</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+    <li><a href="https://mifamilia.reunir.me">
+      <div class="icon ic-familia">F</div>
+      <div class="label"><span>Mi Familia</span><span>mifamilia.reunir.me</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+    <li><a href="https://iurefficient.com">
+      <div class="icon ic-iure">I</div>
+      <div class="label"><span>Iurefficient</span><span>iurefficient.com</span></div>
+      <span class="arrow">&rsaquo;</span>
+    </a></li>
+  </ul>
+  <footer>slapps &middot; 2026</footer>
+</div>
+</body>
+</html>
